@@ -626,10 +626,7 @@ func (p *Player) applyEffect(ch *modChannel, effect, param, x, y uint8, tick0 bo
 			if n < 0 {
 				n = 0
 			}
-			ft := uint8(0)
-			if ch.sample != nil {
-				ft = ch.sample.finetune
-			}
+			ft := ch.finetune
 			ch.arpNotes[0] = periodForNote(n, ft)
 			n1 := n + int(x)
 			if n1 >= 36 {
@@ -939,6 +936,7 @@ func (p *Player) doVibrato(ch *modChannel) {
 func (p *Player) advanceRow() {
 	newPos := p.pos
 	newRow := p.row + 1
+	wrapped := false
 
 	if p.nextRow >= 0 {
 		newRow = p.nextRow
@@ -960,12 +958,16 @@ func (p *Player) advanceRow() {
 		newPos++
 	}
 	if newPos >= p.songLen {
+		wrapped = true
 		newPos = p.restart
 		newRow = 0
 	}
+	if wrapped {
+		p.repeating = true
+	}
 
 	// Detect repeat by tracking order positions visited
-	if newRow == 0 {
+	if !p.repeating && newRow == 0 {
 		byteIdx := newPos >> 5
 		bit := uint32(1) << (uint(newPos) & 31)
 		if p.orderMap[byteIdx]&bit != 0 {

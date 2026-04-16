@@ -88,6 +88,8 @@ type xmChannel struct {
 	fadeoutVol  int
 	volEnvPos   int
 	panEnvPos   int
+	volEnvValue float64
+	panEnvValue float64
 
 	arpX uint8
 	arpY uint8
@@ -429,6 +431,8 @@ func (p *Player) Init(tune []byte, sampleRate int) string {
 		p.channels[i].cutTick = -1
 		p.channels[i].keyoffTick = -1
 		p.channels[i].delayTick = -1
+		p.channels[i].volEnvValue = 1.0
+		p.channels[i].panEnvValue = 32.0
 	}
 	p.Stop()
 	p.initialised = true
@@ -438,7 +442,7 @@ func (p *Player) Init(tune []byte, sampleRate int) string {
 func (p *Player) Stop() {
 	for i := range p.channels {
 		pan := p.channels[i].pan
-		p.channels[i] = xmChannel{pan: pan, fadeoutVol: 65536, sampleDir: 1, cutTick: -1, keyoffTick: -1, delayTick: -1}
+		p.channels[i] = xmChannel{pan: pan, fadeoutVol: 32768, sampleDir: 1, cutTick: -1, keyoffTick: -1, delayTick: -1, volEnvValue: 1.0, panEnvValue: 32.0}
 	}
 	p.globalVol = 64
 	p.pos = 0
@@ -548,15 +552,13 @@ func (p *Player) Sample(left, right *int16) bool {
 		}
 		mix := s0*(1-frac) + s1*frac
 		volMul := float64(ch.volume) / 64.0
-		if ch.inst != nil {
-			volMul *= float64(envelopeValue(ch.inst.volEnv, ch.volEnvPos)) / 64.0
-		}
+		volMul *= ch.volEnvValue
 		volMul *= float64(ch.fadeoutVol) / 32768.0
 		volMul *= float64(p.globalVol) / 64.0
 		pan := float64(ch.pan)
 		if ch.inst != nil && ch.inst.panEnv.enabled {
-			ep := envelopeValue(ch.inst.panEnv, ch.panEnvPos)
-			pan = clampPan(ch.pan + (ep-32)*4)
+			ep := ch.panEnvValue
+			pan = clampPan(ch.pan + int((ep-32)*4))
 		}
 		// Equal-power panning matching libxm: sqrt((MAX_PANNING-pan)/MAX_PANNING), MAX_PANNING=256
 		lVol := math.Sqrt((256.0 - pan) / 256.0)
@@ -767,10 +769,27 @@ func (p *Player) triggerEvent(ch *xmChannel, ev xmEvent, delayed bool) {
 	ch.baseVolume = smp.volume
 	ch.volume = smp.volume
 	ch.pan = smp.panning
-	ch.fadeoutVol = 65536
+	ch.fadeoutVol = 32768
 	ch.volEnvPos = 0
 	ch.panEnvPos = 0
 	ch.autoVibPos = 0
+	// Reset vibrato phase unless waveform-continue flag (bit 2) is set
+	if ch.vibratoWave&0x04 == 0 {
+		ch.vibratoPhase = 0
+	}
+	// Pre-load envelope values at frame 0 (libxm reads value BEFORE advancing)
+	if ch.inst != nil {
+		if ch.inst.volEnv.enabled {
+			ch.volEnvValue = float64(envelopeValue(ch.inst.volEnv, 0)) / 64.0
+		} else {
+			ch.volEnvValue = 1.0
+		}
+		if ch.inst.panEnv.enabled {
+			ch.panEnvValue = float64(envelopeValue(ch.inst.panEnv, 0))
+		} else {
+			ch.panEnvValue = 32.0
+		}
+	}
 }
 
 func (p *Player) keyOff(ch *xmChannel) {
@@ -1150,11 +1169,18 @@ func (p *Player) advanceChannelTick(ch *xmChannel) {
 	if ch.inst == nil {
 		return
 	}
+	// libxm: read envelope value at current pos, THEN advance counter
 	if ch.inst.volEnv.enabled {
+		ch.volEnvValue = float64(envelopeValue(ch.inst.volEnv, ch.volEnvPos)) / 64.0
 		ch.volEnvPos = advanceEnvelope(ch.inst.volEnv, ch.volEnvPos, ch.keyOn)
+	} else {
+		ch.volEnvValue = 1.0
 	}
 	if ch.inst.panEnv.enabled {
+		ch.panEnvValue = float64(envelopeValue(ch.inst.panEnv, ch.panEnvPos))
 		ch.panEnvPos = advanceEnvelope(ch.inst.panEnv, ch.panEnvPos, ch.keyOn)
+	} else {
+		ch.panEnvValue = 32.0
 	}
 	if !ch.keyOn {
 		fade := ch.inst.fadeout

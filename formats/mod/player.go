@@ -103,6 +103,7 @@ type modSample struct {
 	volume    uint8 // 0-64
 	loopStart int   // bytes
 	loopLen   int   // bytes (≤1 = no loop)
+	origData  []int8
 	data      []int8
 }
 
@@ -169,6 +170,11 @@ type modChannel struct {
 	retrigSpd int // retrigger every N ticks (0 = off)
 	retrigCnt int
 
+	// EF: invert loop / funk repeat
+	invertSpeed uint8
+	invertPos   int
+	invertCnt   int
+
 	// EC: note cut, ED: note delay
 	cutTick   int // tick to silence, -1 = none
 	delayTick int // tick to play note, -1 = none
@@ -185,13 +191,15 @@ type Player struct {
 	sampleRate int
 	data       []byte
 
-	title    string
-	samples  [32]modSample // 1-indexed; samples[0] unused
-	numChan  int
-	songLen  int
-	restart  int
-	order    [128]uint8
-	patterns [][]uint32 // [patIdx * 64*numChan + row*numChan + chan] = packed note
+	title       string
+	layout      modLayout
+	samples     [32]modSample // 1-indexed; samples[0] unused
+	sampleCount int
+	numChan     int
+	songLen     int
+	restart     int
+	order       [128]uint8
+	patterns    [][]uint32 // [patIdx * 64*numChan + row*numChan + chan] = packed note
 
 	// Playback
 	pos   int // current order position
@@ -215,6 +223,11 @@ type Player struct {
 	orderMap  [4]uint32
 	repeating bool
 
+	// Approximate Amiga LED filter (E0x)
+	filterEnabled bool
+	filterL       int32
+	filterR       int32
+
 	initialised bool
 }
 
@@ -229,19 +242,22 @@ func (p *Player) Init(tune []byte, sampleRate int) string {
 	if err := Validate(tune); err != "" {
 		return err
 	}
+	layout, ok := detectLayout(tune)
+	if !ok {
+		return "Not a recognised MOD file."
+	}
+	p.layout = layout
+	p.sampleCount = layout.sampleCount
 
 	p.sampleRate = sampleRate
 
 	// Title (first 20 bytes, null-trimmed)
 	p.title = strings.TrimRight(string(tune[:20]), "\x00")
 
-	// Tag → channel count
-	var tag [4]byte
-	copy(tag[:], tune[1080:1084])
-	p.numChan = numChannelsFromTag(tag)
+	p.numChan = layout.numChannels
 
-	// Parse 31 samples
-	for i := 0; i < 31; i++ {
+	// Parse sample headers
+	for i := 0; i < layout.sampleCount; i++ {
 		b := 20 + i*30
 		s := &p.samples[i+1]
 		s.name = strings.TrimRight(string(tune[b:b+22]), "\x00")
@@ -266,12 +282,14 @@ func (p *Player) Init(tune []byte, sampleRate int) string {
 	}
 
 	// Song length & restart
-	p.songLen = int(tune[950])
-	p.restart = int(tune[951])
+	songLenOff := 20 + layout.sampleCount*30
+	ordersOff := songLenOff + 2
+	p.songLen = int(tune[songLenOff])
+	p.restart = int(tune[songLenOff+1])
 	if p.restart >= p.songLen {
 		p.restart = 0
 	}
-	copy(p.order[:], tune[952:1080])
+	copy(p.order[:], tune[ordersOff:ordersOff+128])
 
 	// Find max pattern number
 	maxPat := 0
@@ -283,7 +301,7 @@ func (p *Player) Init(tune []byte, sampleRate int) string {
 
 	// Parse patterns
 	p.patterns = make([][]uint32, maxPat+1)
-	offset := 1084
+	offset := layout.headerSize
 	for pi := 0; pi <= maxPat; pi++ {
 		pat := make([]uint32, 64*p.numChan)
 		for row := 0; row < 64; row++ {
@@ -304,13 +322,15 @@ func (p *Player) Init(tune []byte, sampleRate int) string {
 	}
 
 	// Load sample data
-	for i := 1; i <= 31; i++ {
+	for i := 1; i <= layout.sampleCount; i++ {
 		s := &p.samples[i]
 		if s.length > 0 {
 			raw := tune[offset : offset+s.length]
 			s.data = make([]int8, s.length)
+			s.origData = make([]int8, s.length)
 			for j, b := range raw {
 				s.data[j] = int8(b)
+				s.origData[j] = int8(b)
 			}
 			offset += s.length
 		}
@@ -359,10 +379,19 @@ func (p *Player) Stop() {
 	p.nextRowSame = false
 	p.patDelayCnt = 0
 	p.repeating = false
+	p.filterEnabled = false
+	p.filterL = 0
+	p.filterR = 0
 	for i := range p.orderMap {
 		p.orderMap[i] = 0
 	}
 	p.orderMap[0] = 1
+	for i := 1; i <= p.sampleCount; i++ {
+		s := &p.samples[i]
+		if len(s.origData) == len(s.data) {
+			copy(s.data, s.origData)
+		}
+	}
 }
 
 // GetDescription returns the song title as bytes.
@@ -382,6 +411,9 @@ func (p *Player) Sample(left, right *int16) bool {
 			p.processRow()
 		} else {
 			p.processTick()
+		}
+		for i := range p.channels {
+			p.updateInvertLoop(&p.channels[i])
 		}
 		p.tick++
 		if p.tick >= p.speed+p.patDelayCnt*p.speed {
@@ -458,6 +490,12 @@ func (p *Player) Sample(left, right *int16) bool {
 	divisor := int32(p.numChan * 4)
 	lOut := int32(lAcc / divisor)
 	rOut := int32(rAcc / divisor)
+	if p.filterEnabled {
+		p.filterL = (p.filterL*3 + lOut) / 4
+		p.filterR = (p.filterR*3 + rOut) / 4
+		lOut = p.filterL
+		rOut = p.filterR
+	}
 	if lOut > 32767 {
 		lOut = 32767
 	} else if lOut < -32768 {
@@ -526,6 +564,8 @@ func (p *Player) processRow() {
 		if inst != nil {
 			ch.sample = inst
 			ch.finetune = inst.finetune
+			ch.invertPos = 0
+			ch.invertCnt = 0
 			// Loading a sample sets the volume even without a note
 			ch.volume = int(inst.volume)
 			ch.tremVol = ch.volume
@@ -788,6 +828,9 @@ func (p *Player) applyEffect(ch *modChannel, effect, param, x, y uint8, tick0 bo
 func (p *Player) applyExtended(ch *modChannel, x, y uint8, tick0 bool) {
 	switch x {
 	case 0x0: // E0x: Set filter (ignored in software)
+		if tick0 {
+			p.filterEnabled = y == 0
+		}
 
 	case 0x1: // E1x: Fine portamento up
 		if tick0 {
@@ -868,6 +911,10 @@ func (p *Player) applyExtended(ch *modChannel, x, y uint8, tick0 bool) {
 	case 0xC: // ECx: Note cut at tick y
 		if tick0 {
 			ch.cutTick = int(y)
+			if y == 0 {
+				ch.volume = 0
+				ch.tremVol = 0
+			}
 		} else if ch.cutTick >= 0 && p.tick == ch.cutTick {
 			ch.volume = 0
 			ch.tremVol = 0
@@ -895,6 +942,13 @@ func (p *Player) applyExtended(ch *modChannel, x, y uint8, tick0 bool) {
 		}
 
 	case 0xF: // EFx: Invert loop (ignored)
+		if tick0 {
+			ch.invertSpeed = y & 0x0F
+			if ch.invertSpeed == 0 {
+				ch.invertCnt = 0
+				ch.invertPos = 0
+			}
+		}
 	}
 }
 
@@ -942,6 +996,27 @@ func (p *Player) doVibrato(ch *modChannel) {
 	delta := int(waveOutput(ch.vibWave, ch.vibPos)) * ch.vibDep / 128
 	ch.playPeriod = clampPeriod(int(ch.period) + delta)
 	ch.vibPos = (ch.vibPos + ch.vibSpd) & 63
+}
+
+var invertLoopTable = [16]int{0, 5, 6, 7, 8, 10, 11, 13, 16, 19, 22, 26, 32, 43, 64, 128}
+
+func (p *Player) updateInvertLoop(ch *modChannel) {
+	if ch.invertSpeed == 0 || ch.sample == nil || !ch.sample.hasLoop() || len(ch.sample.data) == 0 {
+		return
+	}
+	ch.invertCnt += invertLoopTable[ch.invertSpeed&0x0F]
+	if ch.invertCnt < 128 {
+		return
+	}
+	ch.invertCnt = 0
+	idx := ch.sample.loopStart + ch.invertPos
+	if idx >= 0 && idx < len(ch.sample.data) {
+		ch.sample.data[idx] = ^ch.sample.data[idx]
+	}
+	ch.invertPos++
+	if ch.invertPos >= ch.sample.loopLen {
+		ch.invertPos = 0
+	}
 }
 
 // advanceRow moves to the next row, handling pattern breaks, position jumps, and repeats.

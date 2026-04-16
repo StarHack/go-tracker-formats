@@ -370,7 +370,8 @@ func parseInstruments(data []byte, offset int, count int) ([]xmInstrument, strin
 			loopStart := int(binary.LittleEndian.Uint32(data[sh+4:]))
 			loopLen := int(binary.LittleEndian.Uint32(data[sh+8:]))
 			volume := int(data[sh+12])
-			finetune := int8(data[sh+13])
+			rawFinetune := int8(data[sh+13])
+		finetune := int8((int(rawFinetune) + 128) / 8 - 16)
 			typ := data[sh+14]
 			pan := int(data[sh+15])
 			rel := int8(data[sh+16])
@@ -535,27 +536,43 @@ func (p *Player) Sample(left, right *int16) bool {
 		}
 		s := ch.sample
 		pos := ch.samplePos
+
+		effLen := s.length
+		if s.loopType != 0 && s.loopLen > 0 {
+			effLen = s.loopStart + s.loopLen
+			if effLen > s.length {
+				effLen = s.length
+			}
+		}
+
 		i0 := int(pos)
-		if i0 < 0 || i0 >= s.length {
-			ch.active = false
-			continue
-		}
-		i1 := i0 + int(ch.sampleDir)
-		if s.loopType == 2 {
-			if i1 >= s.loopStart+s.loopLen {
-				i1 = s.loopStart + s.loopLen - 2
-			}
-			if i1 < s.loopStart {
-				i1 = s.loopStart + 1
-			}
-		} else if s.loopType == 1 {
-			if i1 >= s.loopStart+s.loopLen {
-				i1 = s.loopStart
-			}
-		} else if i1 >= s.length {
-			i1 = i0
-		}
 		frac := pos - float64(i0)
+		var i1 int
+
+		if s.loopType == 2 && i0 >= effLen {
+			i0 = effLen*2 - 1 - i0
+			if i0 < s.loopStart {
+				i0 = s.loopStart
+			}
+			i1 = i0 - 1
+			if i1 < s.loopStart {
+				i1 = i0
+			}
+		} else {
+			if i0 < 0 || i0 >= effLen {
+				ch.active = false
+				continue
+			}
+			i1 = i0 + 1
+			if s.loopType == 2 && i1 >= effLen {
+				i1 = i0
+			} else if s.loopType == 1 && i1 >= effLen {
+				i1 = s.loopStart
+			} else if i1 >= s.length {
+				i1 = i0
+			}
+		}
+
 		s0 := float64(s.data[i0])
 		s1 := s0
 		if i1 >= 0 && i1 < s.length {
@@ -583,7 +600,7 @@ func (p *Player) Sample(left, right *int16) bool {
 		scaledF := mix * volMul * 0.25 / 32768.0
 		lAcc += int64(scaledF * lVol * 32767.0)
 		rAcc += int64(scaledF * rVol * 32767.0)
-		ch.samplePos += step * ch.sampleDir
+		ch.samplePos += step
 		p.wrapSample(ch)
 	}
 	l := clamp32(lAcc)
@@ -642,20 +659,23 @@ func (p *Player) wrapSample(ch *xmChannel) {
 	if s.loopLen <= 1 {
 		return
 	}
-	start := float64(s.loopStart)
 	end := float64(s.loopStart + s.loopLen)
-	if s.loopType == 1 {
-		for ch.samplePos >= end {
-			ch.samplePos -= float64(s.loopLen)
+	if ch.samplePos >= end {
+		off := float64(s.loopStart)
+		ch.samplePos -= off
+		if s.loopType == 2 {
+			cycle := float64(s.loopLen * 2)
+			ch.samplePos = math.Mod(ch.samplePos, cycle)
+			if ch.samplePos < 0 {
+				ch.samplePos += cycle
+			}
+		} else {
+			ch.samplePos = math.Mod(ch.samplePos, float64(s.loopLen))
+			if ch.samplePos < 0 {
+				ch.samplePos += float64(s.loopLen)
+			}
 		}
-	} else if s.loopType == 2 {
-		if ch.sampleDir > 0 && ch.samplePos >= end {
-			ch.sampleDir = -1
-			ch.samplePos = end - 1
-		} else if ch.sampleDir < 0 && ch.samplePos < start {
-			ch.sampleDir = 1
-			ch.samplePos = start
-		}
+		ch.samplePos += off
 	}
 }
 
@@ -724,7 +744,7 @@ func (p *Player) triggerEvent(ch *xmChannel, ev xmEvent) {
 		isTonePorta := ev.effect == 0x03 || ev.effect == 0x05 || ev.vol >= 0xF0
 		if isTonePorta {
 			if ch.sample != nil {
-				ch.targetPitch = float64(noteIdx) + float64(ch.sample.relNote) + float64(ch.sample.finetune)/128.0
+				ch.targetPitch = float64(noteIdx) + float64(ch.sample.relNote) + float64(ch.sample.finetune)/16.0
 			}
 		} else if ch.inst != nil {
 			p.triggerNote(ch, ev, noteIdx)
@@ -771,7 +791,7 @@ func (p *Player) triggerNote(ch *xmChannel, ev xmEvent, noteIdx int) {
 		finetune := float64(int(ev.param&0x0F)*2-16) / 16.0
 		ch.basePitch = float64(noteIdx) + float64(smp.relNote) + finetune
 	} else {
-		ch.basePitch = float64(noteIdx) + float64(smp.relNote) + float64(smp.finetune)/128.0
+		ch.basePitch = float64(noteIdx) + float64(smp.relNote) + float64(smp.finetune)/16.0
 	}
 	ch.playPitch = ch.basePitch
 	ch.targetPitch = ch.basePitch

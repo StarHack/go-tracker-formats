@@ -111,10 +111,9 @@ type xmChannel struct {
 	tremoloWave  uint8
 	tremorOn     bool
 	tremorTicks  int
+	tremorParam  uint8
+	retrigParam  uint8
 	retrigTicks  int
-	retrigCount  int
-	cutTick      int
-	keyoffTick   int
 	delayTick    int
 	delayed      delayedEvent
 	autoVibPos   int
@@ -442,8 +441,6 @@ func (p *Player) Init(tune []byte, sampleRate int) string {
 		p.channels[i].pan = 128
 		p.channels[i].fadeoutVol = 32767
 		p.channels[i].sampleDir = 1
-		p.channels[i].cutTick = -1
-		p.channels[i].keyoffTick = -1
 		p.channels[i].delayTick = -1
 		p.channels[i].volEnvValue = 1.0
 		p.channels[i].panEnvValue = 32.0
@@ -456,7 +453,7 @@ func (p *Player) Init(tune []byte, sampleRate int) string {
 func (p *Player) Stop() {
 	for i := range p.channels {
 		pan := p.channels[i].pan
-		p.channels[i] = xmChannel{pan: pan, fadeoutVol: 32767, sampleDir: 1, cutTick: -1, keyoffTick: -1, delayTick: -1, volEnvValue: 1.0, panEnvValue: 32.0}
+		p.channels[i] = xmChannel{pan: pan, fadeoutVol: 32767, sampleDir: 1, delayTick: -1, volEnvValue: 1.0, panEnvValue: 32.0}
 	}
 	p.globalVol = 64
 	p.pos = 0
@@ -678,8 +675,6 @@ func (p *Player) processRow() {
 		ch := &p.channels[ci]
 		ev := pat.events[p.row*p.module.Channels+ci]
 		ch.playPitch = ch.basePitch
-		ch.cutTick = -1
-		ch.keyoffTick = -1
 		ch.delayTick = -1
 		ch.delayed.active = false
 		if ev.effect == 0x0E && (ev.param>>4) == 0x0D && (ev.param&0x0F) > 0 {
@@ -772,7 +767,12 @@ func (p *Player) triggerNote(ch *xmChannel, ev xmEvent, noteIdx int) {
 	ch.sampleIndex = smpIdx
 	ch.sample = smp
 	ch.note = noteIdx
-	ch.basePitch = float64(noteIdx) + float64(smp.relNote) + float64(smp.finetune)/128.0
+	if ev.effect == 0x0E && (ev.param>>4) == 0x5 {
+		finetune := float64(int(ev.param&0x0F)*2-16) / 16.0
+		ch.basePitch = float64(noteIdx) + float64(smp.relNote) + finetune
+	} else {
+		ch.basePitch = float64(noteIdx) + float64(smp.relNote) + float64(smp.finetune)/128.0
+	}
 	ch.playPitch = ch.basePitch
 	ch.targetPitch = ch.basePitch
 	ch.samplePos = 0
@@ -799,6 +799,8 @@ func (p *Player) triggerInstrument(ch *xmChannel) {
 	ch.volEnvPos = 0
 	ch.panEnvPos = 0
 	ch.autoVibPos = 0
+	ch.retrigTicks = 0
+	ch.tremorTicks = 0
 
 	if ch.vibratoWave&0x04 == 0 {
 		ch.vibratoPhase = 0
@@ -989,10 +991,7 @@ func (p *Player) applyEffect(ch *xmChannel, ev xmEvent, tick0 bool, onlySetup bo
 		}
 	case 0x0D:
 		if tick0 {
-			p.nextRow = int(x)*10 + int(y)
-			if p.nextRow > 255 {
-				p.nextRow = 0
-			}
+			p.nextRow = int(ev.param)
 			p.nextRowSame = false
 		}
 	case 0x0E:
@@ -1041,31 +1040,35 @@ func (p *Player) applyEffect(ch *xmChannel, ev xmEvent, tick0 bool, onlySetup bo
 		}
 	case 0x1B: // R - Multi retrig note
 		if tick0 {
-			ch.retrigTicks = int(y)
-			ch.retrigCount = 0
-		}
-		if ch.retrigTicks > 0 {
-			ch.retrigCount++
-			if ch.retrigCount >= ch.retrigTicks {
-				ch.retrigCount = 0
-				ch.samplePos = 0
-				ch.sampleDir = 1
+			rp := ev.param
+			if rp&0x0F != 0 {
+				ch.retrigParam = (ch.retrigParam & 0xF0) | (rp & 0x0F)
+			}
+			if rp&0xF0 != 0 {
+				ch.retrigParam = (ch.retrigParam & 0x0F) | (rp & 0xF0)
 			}
 		}
+		p.doMultiRetrig(ch, ch.retrigParam)
 	case 0x1D: // T - Tremor
+		if ev.param > 0 {
+			ch.tremorParam = ev.param
+		}
 		if !tick0 {
+			tp := ch.tremorParam
 			if ch.tremorTicks == 0 {
 				ch.tremorOn = !ch.tremorOn
 				if ch.tremorOn {
-					ch.tremorTicks = int(x)
+					ch.tremorTicks = int(tp >> 4)
 				} else {
-					ch.tremorTicks = int(y)
+					ch.tremorTicks = int(tp & 0x0F)
 				}
 			} else {
 				ch.tremorTicks--
 			}
 			if !ch.tremorOn {
 				ch.volume = 0
+			} else {
+				ch.volume = ch.baseVolume
 			}
 		}
 	case 0x21: // X - Extra fine portamento
@@ -1099,12 +1102,7 @@ func (p *Player) applyExtended(ch *xmChannel, x, y uint8, tick0 bool) {
 		if tick0 {
 			ch.vibratoWave = y
 		}
-	case 0x5: // E5y - Set finetune
-		if tick0 && ch.sample != nil {
-			finetune := float64(int(y)*2-16) / 16.0
-			ch.basePitch = float64(ch.note) + float64(ch.sample.relNote) + finetune
-			ch.playPitch = ch.basePitch
-		}
+	case 0x5: // E5y - Set finetune (handled inside triggerNote)
 	case 0x7: // E7y - Set tremolo waveform
 		if tick0 {
 			ch.tremoloWave = y
@@ -1113,7 +1111,6 @@ func (p *Player) applyExtended(ch *xmChannel, x, y uint8, tick0 bool) {
 		if tick0 {
 			if y == 0 {
 				ch.patternLoopOrigin = p.row
-				p.nextRow = ch.patternLoopOrigin
 			} else {
 				if int(y) == ch.patternLoopCount {
 					ch.patternLoopCount = 0
@@ -1125,8 +1122,8 @@ func (p *Player) applyExtended(ch *xmChannel, x, y uint8, tick0 bool) {
 				}
 			}
 		}
-	case 0x9: // E9y - Retrigger note
-		if y > 0 && p.tick%int(y) == 0 {
+	case 0x9: // E9y - Retrigger note (only on non-zero ticks, matching libxm)
+		if !tick0 && y > 0 && p.tick%int(y) == 0 {
 			p.triggerInstrument(ch)
 			if ch.inst != nil && ch.note > 0 {
 				p.triggerNote(ch, xmEvent{note: uint8(ch.note + 1), effect: 0xFF}, ch.note)
@@ -1142,16 +1139,8 @@ func (p *Player) applyExtended(ch *xmChannel, x, y uint8, tick0 bool) {
 			ch.baseVolume = clampInt(ch.baseVolume-int(y), 0, 64)
 			ch.volume = ch.baseVolume
 		}
-	case 0xC:
-		if tick0 {
-			ch.cutTick = int(y)
-			if y == 0 {
-				ch.baseVolume = 0
-				ch.volume = 0
-			}
-		}
-		if !tick0 && p.tick == ch.cutTick {
-			ch.baseVolume = 0
+	case 0xC: // ECy - Note cut (only fires on non-zero ticks in libxm)
+		if !tick0 && p.tick == int(y) {
 			ch.volume = 0
 		}
 	case 0xD:
@@ -1219,6 +1208,35 @@ func (p *Player) doPanSlide(ch *xmChannel, param uint8) {
 	} else {
 		ch.pan = clampInt(ch.pan-int(param&0x0F), 0, 255)
 	}
+}
+
+func (p *Player) doMultiRetrig(ch *xmChannel, param uint8) {
+	y := param & 0x0F
+	if y == 0 {
+		return
+	}
+	ch.retrigTicks++
+	if ch.retrigTicks < int(y) {
+		return
+	}
+	ch.retrigTicks = 0
+
+	ch.samplePos = 0
+	ch.sampleDir = 1
+	ch.active = ch.sample != nil
+
+	var addTab = [16]int{0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 2, 4, 8, 16, 0, 0}
+	var mulTab = [16]int{1, 1, 1, 1, 1, 1, 2, 1, 1, 1, 1, 1, 1, 1, 3, 2}
+	x := int(param >> 4)
+	vol := ch.volume + addTab[x] - addTab[x^8]
+	vol = vol * mulTab[x] / mulTab[x^8]
+	if vol < 0 {
+		vol = 0
+	} else if vol > 64 {
+		vol = 64
+	}
+	ch.volume = vol
+	ch.baseVolume = vol
 }
 
 func (p *Player) advanceChannelTick(ch *xmChannel) {

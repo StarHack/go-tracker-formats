@@ -4,10 +4,10 @@ Supports parsing the following formats:
 
 - RAD (v1/v2)
 - MOD
+- XM (FastTracker 2 style modules)
 
 Planned support (not yet there):
 
-- XM (FastTracker 2 style modules, via a separate formats/xm package)
 - S3M
 - IT
 

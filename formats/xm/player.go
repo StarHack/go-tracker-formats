@@ -216,6 +216,7 @@ func advanceEnvelope(env xmEnvelope, pos int, keyOn bool) int {
 }
 
 func pitchToStep(pitch float64, sampleRate int) float64 {
+	// Reference: C-4 (noteIdx 48, 0-based) = 8363 Hz (FT2 / libxm standard)
 	freq := 8363.0 * math.Pow(2.0, (pitch-48.0)/12.0)
 	return freq / float64(sampleRate)
 }
@@ -423,7 +424,7 @@ func (p *Player) Init(tune []byte, sampleRate int) string {
 	p.channels = make([]xmChannel, layout.Channels)
 	for i := range p.channels {
 		p.channels[i].pan = 128
-		p.channels[i].fadeoutVol = 65536
+		p.channels[i].fadeoutVol = 32768
 		p.channels[i].sampleDir = 1
 		p.channels[i].cutTick = -1
 		p.channels[i].keyoffTick = -1
@@ -481,7 +482,6 @@ func (p *Player) calcSamPerTick() int {
 
 func (p *Player) Sample(left, right *int16) bool {
 	if p.samCnt < 0 {
-		p.samCnt = 0
 		if p.tick == 0 {
 			p.processRow()
 		} else {
@@ -491,6 +491,7 @@ func (p *Player) Sample(left, right *int16) bool {
 			p.advanceChannelTick(&p.channels[i])
 		}
 		p.samPerTick = p.calcSamPerTick()
+		p.samCnt = 0
 		*left = 0
 		*right = 0
 		return p.repeating
@@ -550,21 +551,26 @@ func (p *Player) Sample(left, right *int16) bool {
 		if ch.inst != nil {
 			volMul *= float64(envelopeValue(ch.inst.volEnv, ch.volEnvPos)) / 64.0
 		}
-		volMul *= float64(ch.fadeoutVol) / 65536.0
+		volMul *= float64(ch.fadeoutVol) / 32768.0
 		volMul *= float64(p.globalVol) / 64.0
 		pan := float64(ch.pan)
 		if ch.inst != nil && ch.inst.panEnv.enabled {
 			ep := envelopeValue(ch.inst.panEnv, ch.panEnvPos)
 			pan = clampPan(ch.pan + (ep-32)*4)
 		}
-		scaled := int64(mix * volMul)
-		lAcc += scaled * int64(255-int(pan)) / 255
-		rAcc += scaled * int64(int(pan)) / 255
+		// Equal-power panning matching libxm: sqrt((MAX_PANNING-pan)/MAX_PANNING), MAX_PANNING=256
+		lVol := math.Sqrt((256.0 - pan) / 256.0)
+		rVol := math.Sqrt(pan / 256.0)
+		// AMPLIFICATION = 0.25 (matches libxm), also normalize 8-bit-shifted
+		// samples from int16 range to float: divide by 32768
+		scaledF := mix * volMul * 0.25 / 32768.0
+		lAcc += int64(scaledF * lVol * 32767.0)
+		rAcc += int64(scaledF * rVol * 32767.0)
 		ch.samplePos += step * ch.sampleDir
 		p.wrapSample(ch)
 	}
-	l := clamp32(lAcc / int64(max(1, len(p.channels)*2)))
-	r := clamp32(rAcc / int64(max(1, len(p.channels)*2)))
+	l := clamp32(lAcc)
+	r := clamp32(rAcc)
 	*left = int16(l)
 	*right = int16(r)
 	p.samCnt++
@@ -1102,6 +1108,7 @@ func (p *Player) doTonePorta(ch *xmChannel, speed uint8) {
 
 func (p *Player) doVibrato(ch *xmChannel, speed, depth uint8) {
 	ch.vibratoPhase += int(speed)
+	// libxm: "depth 8 == 2 semitones amplitude (-1 then +1)", i.e. ±1 semitone at depth 8
 	d := evalWaveform(ch.vibratoWave, ch.vibratoPhase) * float64(depth) / 8.0
 	ch.playPitch = ch.basePitch + d
 }
@@ -1114,10 +1121,10 @@ func (p *Player) doVolSlide(ch *xmChannel, param uint8) {
 	}
 	x := int(param >> 4)
 	y := int(param & 0x0F)
-	if x > 0 && y == 0 {
+	// libxm: up-slide has precedence (matches FT2 behaviour for e.g. A1F)
+	if x > 0 {
 		ch.baseVolume = clampInt(ch.baseVolume+x, 0, 64)
-	}
-	if y > 0 && x == 0 {
+	} else if y > 0 {
 		ch.baseVolume = clampInt(ch.baseVolume-y, 0, 64)
 	}
 	ch.volume = ch.baseVolume
@@ -1163,11 +1170,14 @@ func (p *Player) advanceChannelTick(ch *xmChannel) {
 		}
 	}
 	if ch.sample != nil && ch.inst.vibratoDepth > 0 && ch.inst.vibratoRate > 0 {
-		depth := float64(ch.inst.vibratoDepth) / 16.0
+		// libxm: "autovibrato_depth of 8 is the same as 4x1 (vibrato depth 1)"
+		// vibrato depth 1 = 1/8 semitone peak → autovibrato_depth 8 = 1/8 semitone → divisor 64
+		depth := float64(ch.inst.vibratoDepth) / 64.0
 		if ch.inst.vibratoSweep > 0 && ch.autoVibPos < int(ch.inst.vibratoSweep) {
 			depth *= float64(ch.autoVibPos) / float64(ch.inst.vibratoSweep)
 		}
 		ch.autoVibPos++
+		// libxm: "autovibrato_depth 8 = same as 4x1 (vibrato depth 1)" → divisor 64
 		ch.playPitch += evalWaveform(ch.inst.vibratoType, ch.autoVibPos*int(ch.inst.vibratoRate)) * depth
 	}
 }

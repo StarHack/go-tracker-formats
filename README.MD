@@ -35,3 +35,4 @@ Ports some concepts of Reality Adlib Tracker context:
 - The current MOD implementation targets classic 4-channel 15-sample Soundtracker/NoiseTracker style modules as well as tagged 31-sample ProTracker-compatible variants such as `M.K.`, `M!K!`, `FLT4/8`, `xCHN`, and `xxCH`.
 
 - **XM / FastTracker 2** should not be treated as “just another MOD variant” in the same package. It belongs in its own `formats/xm/` package because XM adds a substantially different file structure and playback model: compressed pattern events, instruments with note-to-sample maps, envelopes, fadeout, 8/16-bit delta-coded samples, ping-pong loops, volume-column commands, and linear-frequency playback.
+- The existing test only compares row/tempo/speed state transitions — not actual audio samples. We need to compare real PCM output. Let me write a test that does that.

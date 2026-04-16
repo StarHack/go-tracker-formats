@@ -109,9 +109,8 @@ type xmChannel struct {
 	tremoloDepth uint8
 	tremoloPhase int
 	tremoloWave  uint8
-	tremorOn     int
-	tremorOff    int
-	tremorPos    int
+	tremorOn     bool
+	tremorTicks  int
 	retrigTicks  int
 	retrigCount  int
 	cutTick      int
@@ -119,6 +118,9 @@ type xmChannel struct {
 	delayTick    int
 	delayed      delayedEvent
 	autoVibPos   int
+
+	patternLoopOrigin int
+	patternLoopCount  int
 }
 
 type Player struct {
@@ -161,18 +163,33 @@ func clampInt(v, lo, hi int) int {
 	return v
 }
 
-func evalWaveform(kind uint8, phase int) float64 {
-	p := phase & 63
-	switch kind & 3 {
-	case 1:
-		return 1.0 - float64(p)/32.0
-	case 2:
-		if p < 32 {
-			return 1
+var sinLUT = [16]int{0, 12, 24, 37, 48, 60, 71, 81, 90, 98, 106, 112, 118, 122, 125, 127}
+
+func evalWaveform(waveform uint8, step int) int {
+	s := uint8(step)
+	waveform &= 127
+	switch waveform {
+	case 0: // Sine (LUT-based, matching libxm)
+		q := s >> 2
+		var idx uint8
+		if q&0x10 != 0 {
+			idx = 0x0F - (q & 0x0F)
+		} else {
+			idx = q & 0x0F
 		}
-		return -1
+		if q < 0x20 {
+			return -sinLUT[idx]
+		}
+		return sinLUT[idx]
+	case 1: // Ramp down
+		return int(int8(^s))
+	case 2: // Square
+		if s < 0x80 {
+			return -128
+		}
+		return 127
 	default:
-		return math.Sin(float64(p) * 2 * math.Pi / 64)
+		return 0
 	}
 }
 
@@ -198,23 +215,25 @@ func envelopeValue(env xmEnvelope, pos int) int {
 }
 
 func advanceEnvelope(env xmEnvelope, pos int, keyOn bool) int {
-	if !env.enabled || len(env.points) == 0 {
+	if !env.enabled || len(env.points) < 2 {
 		return pos
+	}
+	if env.loopEnabled && env.loopEnd >= 0 && env.loopEnd < len(env.points) &&
+		env.loopStart >= 0 && env.loopStart < len(env.points) {
+		endFrame := env.points[env.loopEnd].frame
+		if pos == endFrame {
+			if !keyOn || !env.sustainEnabled || env.sustainPoint != env.loopEnd {
+				pos = env.points[env.loopStart].frame
+			}
+		}
 	}
 	if keyOn && env.sustainEnabled && env.sustainPoint >= 0 && env.sustainPoint < len(env.points) {
 		sf := env.points[env.sustainPoint].frame
-		if pos >= sf {
+		if pos == sf {
 			return pos
 		}
 	}
-	pos++
-	if env.loopEnabled && env.loopStart >= 0 && env.loopEnd >= env.loopStart && env.loopEnd < len(env.points) {
-		endFrame := env.points[env.loopEnd].frame
-		if pos > endFrame {
-			pos = env.points[env.loopStart].frame
-		}
-	}
-	return pos
+	return pos + 1
 }
 
 func pitchToStep(pitch float64, sampleRate int) float64 {
@@ -236,16 +255,11 @@ func decodeDelta8(data []byte) []int16 {
 func decodeDelta16(data []byte) []int16 {
 	count := len(data) / 2
 	out := make([]int16, count)
-	var acc int32
+	var acc int16
 	for i := 0; i < count; i++ {
 		d := int16(binary.LittleEndian.Uint16(data[i*2:]))
-		acc += int32(d)
-		if acc > 32767 {
-			acc = 32767
-		} else if acc < -32768 {
-			acc = -32768
-		}
-		out[i] = int16(acc)
+		acc += d
+		out[i] = acc
 	}
 	return out
 }
@@ -426,7 +440,7 @@ func (p *Player) Init(tune []byte, sampleRate int) string {
 	p.channels = make([]xmChannel, layout.Channels)
 	for i := range p.channels {
 		p.channels[i].pan = 128
-		p.channels[i].fadeoutVol = 32768
+		p.channels[i].fadeoutVol = 32767
 		p.channels[i].sampleDir = 1
 		p.channels[i].cutTick = -1
 		p.channels[i].keyoffTick = -1
@@ -442,7 +456,7 @@ func (p *Player) Init(tune []byte, sampleRate int) string {
 func (p *Player) Stop() {
 	for i := range p.channels {
 		pan := p.channels[i].pan
-		p.channels[i] = xmChannel{pan: pan, fadeoutVol: 32768, sampleDir: 1, cutTick: -1, keyoffTick: -1, delayTick: -1, volEnvValue: 1.0, panEnvValue: 32.0}
+		p.channels[i] = xmChannel{pan: pan, fadeoutVol: 32767, sampleDir: 1, cutTick: -1, keyoffTick: -1, delayTick: -1, volEnvValue: 1.0, panEnvValue: 32.0}
 	}
 	p.globalVol = 64
 	p.pos = 0
@@ -553,16 +567,20 @@ func (p *Player) Sample(left, right *int16) bool {
 		mix := s0*(1-frac) + s1*frac
 		volMul := float64(ch.volume) / 64.0
 		volMul *= ch.volEnvValue
-		volMul *= float64(ch.fadeoutVol) / 32768.0
+		volMul *= float64(ch.fadeoutVol) / 32767.0
 		volMul *= float64(p.globalVol) / 64.0
-		pan := float64(ch.pan)
+		pan := ch.pan
 		if ch.inst != nil && ch.inst.panEnv.enabled {
-			ep := ch.panEnvValue
-			pan = clampPan(ch.pan + int((ep-32)*4))
+			ep := int(ch.panEnvValue)
+			pan += (ep - 32) * (128 - abs(pan-128)) / 32
+			if pan < 0 {
+				pan = 0
+			} else if pan > 255 {
+				pan = 255
+			}
 		}
-		// Equal-power panning matching libxm: sqrt((MAX_PANNING-pan)/MAX_PANNING), MAX_PANNING=256
-		lVol := math.Sqrt((256.0 - pan) / 256.0)
-		rVol := math.Sqrt(pan / 256.0)
+		lVol := math.Sqrt(float64(256-pan) / 256.0)
+		rVol := math.Sqrt(float64(pan) / 256.0)
 		// AMPLIFICATION = 0.25 (matches libxm), also normalize 8-bit-shifted
 		// samples from int16 range to float: divide by 32768
 		scaledF := mix * volMul * 0.25 / 32768.0
@@ -588,15 +606,6 @@ func (p *Player) Sample(left, right *int16) bool {
 	return p.repeating
 }
 
-func clampPan(v int) float64 {
-	if v < 0 {
-		return 0
-	}
-	if v > 255 {
-		return 255
-	}
-	return float64(v)
-}
 
 func clamp32(v int64) int32 {
 	if v > 32767 {
@@ -613,6 +622,13 @@ func max(a, b int) int {
 		return a
 	}
 	return b
+}
+
+func abs(a int) int {
+	if a < 0 {
+		return -a
+	}
+	return a
 }
 
 func (p *Player) wrapSample(ch *xmChannel) {
@@ -666,17 +682,14 @@ func (p *Player) processRow() {
 		ch.keyoffTick = -1
 		ch.delayTick = -1
 		ch.delayed.active = false
-		p.applyVolumeColumn(ch, ev.vol, true)
-		if ev.note == 97 {
-			p.keyOff(ch)
-		}
 		if ev.effect == 0x0E && (ev.param>>4) == 0x0D && (ev.param&0x0F) > 0 {
 			ch.delayTick = int(ev.param & 0x0F)
 			ch.delayed = delayedEvent{active: true, event: ev}
 			p.applyEffect(ch, ev, true, true)
 			continue
 		}
-		p.triggerEvent(ch, ev, false)
+		p.triggerEvent(ch, ev)
+		p.applyVolumeColumn(ch, ev.vol, true)
 		p.applyEffect(ch, ev, true, false)
 	}
 }
@@ -700,31 +713,44 @@ func (p *Player) processTick() {
 		p.applyVolumeColumn(ch, ev.vol, false)
 		p.applyEffect(ch, ev, false, false)
 		if ch.delayTick >= 0 && p.tick == ch.delayTick && ch.delayed.active {
-			p.triggerEvent(ch, ch.delayed.event, true)
+			p.triggerEvent(ch, ch.delayed.event)
 		}
 	}
 }
 
-func (p *Player) triggerEvent(ch *xmChannel, ev xmEvent, delayed bool) {
+func (p *Player) triggerEvent(ch *xmChannel, ev xmEvent) {
 	if ev.inst > 0 && int(ev.inst) < len(p.instruments) {
 		ch.instIndex = int(ev.inst)
 		ch.inst = &p.instruments[ch.instIndex]
 	}
-	if ev.note == 0 || ev.note == 97 {
-		if ev.inst > 0 && ch.sample != nil {
+
+	if ev.note > 0 && ev.note < 97 {
+		noteIdx := int(ev.note) - 1
+		isTonePorta := ev.effect == 0x03 || ev.effect == 0x05 || ev.vol >= 0xF0
+		if isTonePorta {
+			if ch.sample != nil {
+				ch.targetPitch = float64(noteIdx) + float64(ch.sample.relNote) + float64(ch.sample.finetune)/128.0
+			}
+		} else if ch.inst != nil {
+			p.triggerNote(ch, ev, noteIdx)
+		}
+	} else if ev.note == 97 {
+		p.keyOff(ch)
+	}
+
+	if ev.inst > 0 {
+		if ch.sample != nil {
 			ch.baseVolume = ch.sample.volume
 			ch.volume = ch.baseVolume
 			ch.pan = ch.sample.panning
 		}
-		return
+		if ev.note != 97 {
+			p.triggerInstrument(ch)
+		}
 	}
-	if ch.inst == nil {
-		return
-	}
-	noteIdx := int(ev.note) - 1
-	if noteIdx < 0 {
-		return
-	}
+}
+
+func (p *Player) triggerNote(ch *xmChannel, ev xmEvent, noteIdx int) {
 	mapIdx := noteIdx
 	if mapIdx > 95 {
 		mapIdx = 95
@@ -737,13 +763,12 @@ func (p *Player) triggerEvent(ch *xmChannel, ev xmEvent, delayed bool) {
 		return
 	}
 	smp := &ch.inst.samples[smpIdx]
-	if ev.effect == 0x03 || ev.effect == 0x05 || ev.vol >= 0xF0 {
-		ch.targetPitch = float64(noteIdx) + float64(smp.relNote) + float64(smp.finetune)/128.0
-		if ev.effect == 0x03 && ev.param != 0 {
-			ch.tonePortaMem = ev.param
-		}
+
+	noteVal := noteIdx + int(smp.relNote)
+	if noteVal < 0 || noteVal >= 120 {
 		return
 	}
+
 	ch.sampleIndex = smpIdx
 	ch.sample = smp
 	ch.note = noteIdx
@@ -751,11 +776,14 @@ func (p *Player) triggerEvent(ch *xmChannel, ev xmEvent, delayed bool) {
 	ch.playPitch = ch.basePitch
 	ch.targetPitch = ch.basePitch
 	ch.samplePos = 0
-	if ev.effect == 0x09 || delayed {
-		off := int(ch.sampleOffMem) * 256
+	ch.sampleDir = 1
+	ch.active = true
+
+	if ev.effect == 0x09 {
 		if ev.param != 0 {
-			off = int(ev.param) * 256
+			ch.sampleOffMem = ev.param
 		}
+		off := int(ch.sampleOffMem) * 256
 		if smp.is16 {
 			off /= 2
 		}
@@ -763,21 +791,22 @@ func (p *Player) triggerEvent(ch *xmChannel, ev xmEvent, delayed bool) {
 			ch.samplePos = float64(off)
 		}
 	}
-	ch.sampleDir = 1
+}
+
+func (p *Player) triggerInstrument(ch *xmChannel) {
 	ch.keyOn = true
-	ch.active = true
-	ch.baseVolume = smp.volume
-	ch.volume = smp.volume
-	ch.pan = smp.panning
-	ch.fadeoutVol = 32768
+	ch.fadeoutVol = 32767
 	ch.volEnvPos = 0
 	ch.panEnvPos = 0
 	ch.autoVibPos = 0
-	// Reset vibrato phase unless waveform-continue flag (bit 2) is set
+
 	if ch.vibratoWave&0x04 == 0 {
 		ch.vibratoPhase = 0
 	}
-	// Pre-load envelope values at frame 0 (libxm reads value BEFORE advancing)
+	if ch.tremoloWave&0x04 == 0 {
+		ch.tremoloPhase = 0
+	}
+
 	if ch.inst != nil {
 		if ch.inst.volEnv.enabled {
 			ch.volEnvValue = float64(envelopeValue(ch.inst.volEnv, 0)) / 64.0
@@ -794,6 +823,10 @@ func (p *Player) triggerEvent(ch *xmChannel, ev xmEvent, delayed bool) {
 
 func (p *Player) keyOff(ch *xmChannel) {
 	ch.keyOn = false
+	if ch.inst == nil || !ch.inst.volEnv.enabled || len(ch.inst.volEnv.points) == 0 {
+		ch.volume = 0
+		ch.baseVolume = 0
+	}
 }
 
 func (p *Player) applyVolumeColumn(ch *xmChannel, vol uint8, tick0 bool) {
@@ -824,15 +857,20 @@ func (p *Player) applyVolumeColumn(ch *xmChannel, vol uint8, tick0 bool) {
 		}
 	case vol >= 0xA0 && vol <= 0xAF:
 		if tick0 {
-			ch.vibratoSpd = (vol & 0x0F) << 2
+			if vol&0x0F != 0 {
+				ch.vibratoSpd = (vol & 0x0F) << 2
+			}
 		}
 	case vol >= 0xB0 && vol <= 0xBF:
 		if !tick0 {
-			p.doVibrato(ch, 0, vol&0x0F)
+			if vol&0x0F != 0 {
+				ch.vibratoDepth = vol & 0x0F
+			}
+			p.doVibrato(ch, ch.vibratoSpd, ch.vibratoDepth)
 		}
 	case vol >= 0xC0 && vol <= 0xCF:
 		if tick0 {
-			ch.pan = int((vol & 0x0F) * 17)
+			ch.pan = int(vol&0x0F) << 4
 		}
 	case vol >= 0xD0 && vol <= 0xDF:
 		if !tick0 {
@@ -843,8 +881,12 @@ func (p *Player) applyVolumeColumn(ch *xmChannel, vol uint8, tick0 bool) {
 			ch.pan = clampInt(ch.pan+int(vol&0x0F), 0, 255)
 		}
 	case vol >= 0xF0:
-		if !tick0 {
-			p.doTonePorta(ch, vol&0x0F)
+		if tick0 {
+			if vol&0x0F != 0 {
+				ch.tonePortaMem = (vol & 0x0F) << 4
+			}
+		} else {
+			p.doTonePorta(ch, ch.tonePortaMem)
 		}
 	}
 }
@@ -857,15 +899,14 @@ func (p *Player) applyEffect(ch *xmChannel, ev xmEvent, tick0 bool, onlySetup bo
 		if tick0 {
 			ch.arpX, ch.arpY = x, y
 		} else if ev.param != 0 {
-			step := p.tick % 3
-			pitch := ch.basePitch
-			if step == 1 {
-				pitch += float64(ch.arpX)
+			t := p.speed - p.tick
+			if t%3 == 0 {
+				ch.playPitch = ch.basePitch
+			} else if t%3 == 2 {
+				ch.playPitch = ch.basePitch + float64(ch.arpY)
+			} else {
+				ch.playPitch = ch.basePitch + float64(ch.arpX)
 			}
-			if step == 2 {
-				pitch += float64(ch.arpY)
-			}
-			ch.playPitch = pitch
 		}
 	case 0x01:
 		if ev.param != 0 {
@@ -918,8 +959,9 @@ func (p *Player) applyEffect(ch *xmChannel, ev xmEvent, tick0 bool, onlySetup bo
 			ch.tremoloDepth = y
 		}
 		if !tick0 {
-			d := int(evalWaveform(ch.tremoloWave, ch.tremoloPhase) * float64(ch.tremoloDepth))
-			ch.volume = clampInt(ch.baseVolume+d, 0, 64)
+			wv := evalWaveform(ch.tremoloWave, ch.tremoloPhase)
+			offset := int(int16(wv) * int16(ch.tremoloDepth) * 4 / 128)
+			ch.volume = clampInt(ch.baseVolume-offset, 0, 64)
 			ch.tremoloPhase += int(ch.tremoloSpd)
 		}
 	case 0x08:
@@ -970,57 +1012,68 @@ func (p *Player) applyEffect(ch *xmChannel, ev xmEvent, tick0 bool, onlySetup bo
 		if tick0 {
 			p.globalVol = clampInt(int(ev.param), 0, 64)
 		}
-	case 0x11:
+	case 0x11: // H - Global volume slide
 		if ev.param != 0 {
-			ch.globVolMem = int(int8(ev.param))
+			ch.globVolMem = int(ev.param)
 		}
 		if !tick0 {
-			p.globalVol = clampInt(p.globalVol+int(int8(ev.param)), 0, 64)
+			param := uint8(ch.globVolMem)
+			if param>>4 > 0 {
+				p.globalVol = clampInt(p.globalVol+int(param>>4), 0, 64)
+			} else {
+				p.globalVol = clampInt(p.globalVol-int(param&0x0F), 0, 64)
+			}
 		}
-	case 0x14:
-		if !tick0 {
-			ch.basePitch += float64(ch.portaUpMem) / 64.0
-			ch.playPitch = ch.basePitch
-		}
-	case 0x15:
-		if !tick0 {
-			p.doVibrato(ch, ch.vibratoSpd, ch.vibratoDepth)
-		}
-	case 0x19:
+	case 0x14: // K - Key off at tick y
 		if !tick0 {
 			if p.tick == int(ev.param) {
 				p.keyOff(ch)
 			}
 		}
-	case 0x1B:
+	case 0x15: // L - Set envelope position
 		if tick0 {
 			ch.volEnvPos = int(ev.param)
 			ch.panEnvPos = int(ev.param)
 		}
-	case 0x1D:
+	case 0x19: // P - Panning slide
 		if !tick0 {
 			p.doPanSlide(ch, ev.param)
 		}
-	case 0x1B + 5: // 0x20 T tremor
-		if x != 0 || y != 0 {
-			ch.tremorOn, ch.tremorOff = int(x), int(y)
+	case 0x1B: // R - Multi retrig note
+		if tick0 {
+			ch.retrigTicks = int(y)
+			ch.retrigCount = 0
 		}
-		if !tick0 && ch.tremorOn+ch.tremorOff > 0 {
-			span := ch.tremorOn + ch.tremorOff
-			pos := ch.tremorPos % span
-			if pos >= ch.tremorOn {
-				ch.volume = 0
-			} else {
-				ch.volume = ch.baseVolume
+		if ch.retrigTicks > 0 {
+			ch.retrigCount++
+			if ch.retrigCount >= ch.retrigTicks {
+				ch.retrigCount = 0
+				ch.samplePos = 0
+				ch.sampleDir = 1
 			}
-			ch.tremorPos++
 		}
-	case 0x21:
-		if x == 1 && !tick0 {
+	case 0x1D: // T - Tremor
+		if !tick0 {
+			if ch.tremorTicks == 0 {
+				ch.tremorOn = !ch.tremorOn
+				if ch.tremorOn {
+					ch.tremorTicks = int(x)
+				} else {
+					ch.tremorTicks = int(y)
+				}
+			} else {
+				ch.tremorTicks--
+			}
+			if !ch.tremorOn {
+				ch.volume = 0
+			}
+		}
+	case 0x21: // X - Extra fine portamento
+		if x == 1 && tick0 {
 			ch.basePitch += float64(y) / 64.0
 			ch.playPitch = ch.basePitch
 		}
-		if x == 2 && !tick0 {
+		if x == 2 && tick0 {
 			ch.basePitch -= float64(y) / 64.0
 			ch.playPitch = ch.basePitch
 		}
@@ -1032,45 +1085,51 @@ func (p *Player) applyEffect(ch *xmChannel, ev xmEvent, tick0 bool, onlySetup bo
 
 func (p *Player) applyExtended(ch *xmChannel, x, y uint8, tick0 bool) {
 	switch x {
-	case 0x1:
+	case 0x1: // E1y - Fine portamento up
 		if tick0 {
-			ch.basePitch += float64(y) / 64.0
+			ch.basePitch += float64(y) / 16.0
 			ch.playPitch = ch.basePitch
 		}
-	case 0x2:
+	case 0x2: // E2y - Fine portamento down
 		if tick0 {
-			ch.basePitch -= float64(y) / 64.0
+			ch.basePitch -= float64(y) / 16.0
 			ch.playPitch = ch.basePitch
 		}
-	case 0x4:
+	case 0x4: // E4y - Set vibrato waveform
 		if tick0 {
 			ch.vibratoWave = y
 		}
-	case 0x5:
+	case 0x5: // E5y - Set finetune
 		if tick0 && ch.sample != nil {
-			ch.basePitch = float64(ch.note) + float64(ch.sample.relNote) + float64(int8(y<<4))/128.0
+			finetune := float64(int(y)*2-16) / 16.0
+			ch.basePitch = float64(ch.note) + float64(ch.sample.relNote) + finetune
 			ch.playPitch = ch.basePitch
+		}
+	case 0x7: // E7y - Set tremolo waveform
+		if tick0 {
+			ch.tremoloWave = y
 		}
 	case 0x6:
 		if tick0 {
 			if y == 0 {
-				p.nextRow = p.row
-				p.nextRowSame = true
+				ch.patternLoopOrigin = p.row
+				p.nextRow = ch.patternLoopOrigin
 			} else {
-				p.nextRow = max(0, p.row-int(y))
-				p.nextRowSame = true
+				if int(y) == ch.patternLoopCount {
+					ch.patternLoopCount = 0
+				} else {
+					ch.patternLoopCount++
+					p.nextPos = p.pos
+					p.nextRow = ch.patternLoopOrigin
+					p.nextRowSame = true
+				}
 			}
 		}
-	case 0x9:
-		if tick0 {
-			ch.retrigTicks = int(y)
-			ch.retrigCount = 0
-		}
-		if !tick0 && ch.retrigTicks > 0 {
-			ch.retrigCount++
-			if ch.retrigCount >= ch.retrigTicks {
-				ch.retrigCount = 0
-				ch.samplePos = 0
+	case 0x9: // E9y - Retrigger note
+		if y > 0 && p.tick%int(y) == 0 {
+			p.triggerInstrument(ch)
+			if ch.inst != nil && ch.note > 0 {
+				p.triggerNote(ch, xmEvent{note: uint8(ch.note + 1), effect: 0xFF}, ch.note)
 			}
 		}
 	case 0xA:
@@ -1126,10 +1185,10 @@ func (p *Player) doTonePorta(ch *xmChannel, speed uint8) {
 }
 
 func (p *Player) doVibrato(ch *xmChannel, speed, depth uint8) {
+	wv := evalWaveform(ch.vibratoWave, ch.vibratoPhase)
+	offset := int16(wv) * int16(depth) / 0x10
+	ch.playPitch = ch.basePitch + float64(offset)/64.0
 	ch.vibratoPhase += int(speed)
-	// libxm: "depth 8 == 2 semitones amplitude (-1 then +1)", i.e. ±1 semitone at depth 8
-	d := evalWaveform(ch.vibratoWave, ch.vibratoPhase) * float64(depth) / 8.0
-	ch.playPitch = ch.basePitch + d
 }
 
 func (p *Player) doVolSlide(ch *xmChannel, param uint8) {
@@ -1155,13 +1214,10 @@ func (p *Player) doPanSlide(ch *xmChannel, param uint8) {
 	} else {
 		param = ch.panSlideMem
 	}
-	x := int(param >> 4)
-	y := int(param & 0x0F)
-	if x > 0 && y == 0 {
-		ch.pan = clampInt(ch.pan+x, 0, 255)
-	}
-	if y > 0 && x == 0 {
-		ch.pan = clampInt(ch.pan-y, 0, 255)
+	if param&0xF0 != 0 {
+		ch.pan = clampInt(ch.pan+int(param>>4), 0, 255)
+	} else {
+		ch.pan = clampInt(ch.pan-int(param&0x0F), 0, 255)
 	}
 }
 
@@ -1183,28 +1239,22 @@ func (p *Player) advanceChannelTick(ch *xmChannel) {
 		ch.panEnvValue = 32.0
 	}
 	if !ch.keyOn {
-		fade := ch.inst.fadeout
-		if fade <= 0 {
-			fade = 256
-		}
-		ch.fadeoutVol -= fade
+		ch.fadeoutVol -= ch.inst.fadeout
 		if ch.fadeoutVol < 0 {
 			ch.fadeoutVol = 0
 		}
-		if ch.fadeoutVol == 0 {
-			ch.active = false
-		}
+	} else {
+		ch.fadeoutVol = 32767
 	}
 	if ch.sample != nil && ch.inst.vibratoDepth > 0 && ch.inst.vibratoRate > 0 {
-		// libxm: "autovibrato_depth of 8 is the same as 4x1 (vibrato depth 1)"
-		// vibrato depth 1 = 1/8 semitone peak → autovibrato_depth 8 = 1/8 semitone → divisor 64
-		depth := float64(ch.inst.vibratoDepth) / 64.0
+		step := int(uint8(uint16(ch.autoVibPos) * uint16(ch.inst.vibratoRate)))
+		wv := evalWaveform(ch.inst.vibratoType, step)
+		offset := int8(int(wv) * (-int(ch.inst.vibratoDepth)) / 128)
 		if ch.inst.vibratoSweep > 0 && ch.autoVibPos < int(ch.inst.vibratoSweep) {
-			depth *= float64(ch.autoVibPos) / float64(ch.inst.vibratoSweep)
+			offset = int8(int16(offset) * int16(ch.autoVibPos) / int16(ch.inst.vibratoSweep))
 		}
 		ch.autoVibPos++
-		// libxm: "autovibrato_depth 8 = same as 4x1 (vibrato depth 1)" → divisor 64
-		ch.playPitch += evalWaveform(ch.inst.vibratoType, ch.autoVibPos*int(ch.inst.vibratoRate)) * depth
+		ch.playPitch += float64(offset) / 64.0
 	}
 }
 

@@ -1,9 +1,9 @@
-// main.go - rad2wav: convert RAD and MOD tune files to WAV audio.
+// main.go - rad2wav: convert RAD, MOD, and XM tune files to WAV audio.
 // Pure Go, no CGO.
 //
 // Usage:
 //
-//	rad2wav input.{rad,mod} [-o output.wav] [-rate 44100]
+//	rad2wav input.{rad,mod,xm} [-o output.wav] [-rate 44100]
 package main
 
 import (
@@ -18,6 +18,7 @@ import (
 	"rad2wav/formats/mod"
 	radv1 "rad2wav/formats/rad-v1"
 	radv2 "rad2wav/formats/rad-v2"
+	"rad2wav/formats/xm"
 	"rad2wav/opal"
 )
 
@@ -27,7 +28,7 @@ func main() {
 	outFlag := flag.String("o", "", "output WAV file (default: input basename + .wav)")
 	rateFlag := flag.Int("rate", defaultSampleRate, "output sample rate in Hz")
 	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: rad2wav [options] input.{rad,mod}\n\nOptions:\n")
+		fmt.Fprintf(os.Stderr, "Usage: rad2wav [options] input.{rad,mod,xm}\n\nOptions:\n")
 		flag.PrintDefaults()
 	}
 	flag.Parse()
@@ -85,26 +86,37 @@ func detect(tune []byte) (interface{}, string) {
 		hdr := "RAD by REALiTY!!"
 		match := true
 		for i := 0; i < 16; i++ {
-			if tune[i] != hdr[i] { match = false; break }
+			if tune[i] != hdr[i] {
+				match = false
+				break
+			}
 		}
 		if match {
 			switch tune[0x10] {
 			case 0x10:
-				if e := radv1.Validate(tune); e != "" { return nil, e }
+				if e := radv1.Validate(tune); e != "" {
+					return nil, e
+				}
 				return &radv1.Player{}, ""
 			case 0x21:
-				if e := radv2.Validate(tune); e != "" { return nil, e }
+				if e := radv2.Validate(tune); e != "" {
+					return nil, e
+				}
 				return &radv2.Player{}, ""
 			default:
 				return nil, "Not a recognised RAD version."
 			}
 		}
 	}
+	// XM
+	if e := xm.Validate(tune); e == "" {
+		return &xm.Player{}, ""
+	}
 	// MOD
 	if e := mod.Validate(tune); e == "" {
 		return &mod.Player{}, ""
 	}
-	return nil, "Unrecognised file format (not RAD v1/v2 or MOD)."
+	return nil, "Unrecognised file format (not RAD v1/v2, XM, or MOD)."
 }
 
 // renderToSamples dispatches to the appropriate render path.
@@ -173,22 +185,28 @@ func writeWAV(path string, samples []int16, sampleRate int) error {
 	}
 	defer f.Close()
 	var (
-		numChannels  = uint16(2)
+		numChannels   = uint16(2)
 		bitsPerSample = uint16(16)
 		byteRate      = uint32(sampleRate) * uint32(numChannels) * uint32(bitsPerSample/8)
 		blockAlign    = numChannels * bitsPerSample / 8
-		dataSize       = uint32(len(samples)) * uint32(bitsPerSample/8)
-		riffSize       = 36 + dataSize
+		dataSize      = uint32(len(samples)) * uint32(bitsPerSample/8)
+		riffSize      = 36 + dataSize
 	)
 	le := binary.LittleEndian
 	w := func(v interface{}) { binary.Write(f, le, v) }
-	f.WriteString("RIFF"); w(riffSize)
+	f.WriteString("RIFF")
+	w(riffSize)
 	f.WriteString("WAVE")
-	f.WriteString("fmt "); w(uint32(16))
-	w(uint16(1)); w(numChannels)
-	w(uint32(sampleRate)); w(byteRate)
-	w(blockAlign); w(bitsPerSample)
-	f.WriteString("data"); w(dataSize)
+	f.WriteString("fmt ")
+	w(uint32(16))
+	w(uint16(1))
+	w(numChannels)
+	w(uint32(sampleRate))
+	w(byteRate)
+	w(blockAlign)
+	w(bitsPerSample)
+	f.WriteString("data")
+	w(dataSize)
 	w(samples)
 	return nil
 }
@@ -207,13 +225,16 @@ func printInfo(tracker interface{}) {
 	case *mod.Player:
 		label = "MOD"
 		desc = t.GetDescription()
+	case *xm.Player:
+		label = "XM"
+		desc = t.GetDescription()
 	}
 	fmt.Printf("Format: %s\n", label)
 	if len(desc) == 0 {
 		return
 	}
 	switch tracker.(type) {
-	case *mod.Player:
+	case *mod.Player, *xm.Player:
 		fmt.Printf("Title:  %s\n", string(desc))
 	default:
 		printRADDescription(desc)
@@ -227,14 +248,17 @@ func printRADDescription(desc []byte) {
 	var line []byte
 	fmt.Println("Description:")
 	for len(s) > 0 {
-		c := s[0]; s = s[1:]
+		c := s[0]
+		s = s[1:]
 		if c == 1 {
 			fmt.Println(string(line))
 			line = line[:0]
 			continue
 		}
 		if c < 32 {
-			for i := 0; i < int(c); i++ { line = append(line, ' ') }
+			for i := 0; i < int(c); i++ {
+				line = append(line, ' ')
+			}
 			continue
 		}
 		line = append(line, c)

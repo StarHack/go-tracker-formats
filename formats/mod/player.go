@@ -810,23 +810,26 @@ func (p *Player) applyEffect(ch *modChannel, effect, param, x, y uint8, tick0 bo
 			if y != 0 {
 				ch.tremDep = int(y)
 			}
-		}
-		delta := int(waveOutput(ch.tremWave, ch.tremPos)) * ch.tremDep / 64
-		ch.tremVol = clampVol(ch.volume + delta)
-		if !tick0 {
+			// ProTracker-style: tick 0 updates parameters only.
+			// The channel starts from base volume and tremolo modulation
+			// applies on subsequent ticks.
+			ch.tremVol = ch.volume
+		} else {
+			delta := int(waveOutput(ch.tremWave, ch.tremPos)) * ch.tremDep / 64
+			ch.tremVol = clampVol(ch.volume + delta)
 			ch.tremPos = (ch.tremPos + ch.tremSpd) & 63
 		}
 
 	case 0x8: // Set panning (0x00=left, 0x80=centre, 0xFF=right)
-		ch.pan = int(param)
+		if tick0 {
+			ch.pan = int(param)
+		}
 
 	case 0x9: // Sample offset
 		if tick0 {
 			if param != 0 {
 				ch.sampleOffset = int(param) * 256
 			}
-			ch.pos = float64(ch.sampleOffset)
-			ch.active = ch.sample != nil
 		}
 
 	case 0xA: // Volume slide
@@ -885,25 +888,31 @@ func (p *Player) applyExtended(ch *modChannel, x, y uint8, tick0 bool) {
 	case 0x1: // E1x: Fine portamento up
 		if tick0 {
 			ch.period = clampPeriod(int(ch.period) - int(y))
+			ch.playPeriod = ch.period
 		}
 
 	case 0x2: // E2x: Fine portamento down
 		if tick0 {
 			ch.period = clampPeriod(int(ch.period) + int(y))
+			ch.playPeriod = ch.period
 		}
 
 	case 0x3: // E3x: Glissando (snap tone-portamento to semitone)
-		ch.glissando = y != 0
+		if tick0 {
+			ch.glissando = y != 0
+		}
 
 	case 0x4: // E4x: Set vibrato waveform
-		ch.vibWave = y & 3
-		ch.vibRetrig = (y & 4) != 0
+		if tick0 {
+			ch.vibWave = y & 3
+			ch.vibRetrig = (y & 4) != 0
+		}
 
 	case 0x5: // E5x: Set finetune
-		ch.finetune = y
-		if ch.note >= 0 {
-			ch.period = periodForNote(ch.note, y)
-			ch.playPeriod = ch.period
+		if tick0 {
+			// Like XM trigger-time finetune handling, E5x sets finetune state for
+			// subsequent note triggers instead of forcibly retuning the active one.
+			ch.finetune = y
 		}
 
 	case 0x6: // E6x: Pattern loop
@@ -927,11 +936,15 @@ func (p *Player) applyExtended(ch *modChannel, x, y uint8, tick0 bool) {
 		}
 
 	case 0x7: // E7x: Set tremolo waveform
-		ch.tremWave = y & 3
-		ch.tremRetrig = (y & 4) != 0
+		if tick0 {
+			ch.tremWave = y & 3
+			ch.tremRetrig = (y & 4) != 0
+		}
 
 	case 0x8: // E8x: Set panning (coarse: 0=left, 8=centre, 15=right)
-		ch.pan = int(y) * 17
+		if tick0 {
+			ch.pan = int(y) * 17
+		}
 
 	case 0x9: // E9x: Retrigger note every y ticks
 		if tick0 {

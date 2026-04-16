@@ -80,9 +80,8 @@ type xmChannel struct {
 	basePitch   float64
 	playPitch   float64
 	targetPitch float64
-	samplePos   float64
-	sampleDir   float64
-	baseVolume  int
+	samplePos  float64
+	baseVolume int
 	volume      int
 	pan         int
 	fadeoutVol  int
@@ -213,26 +212,30 @@ func envelopeValue(env xmEnvelope, pos int) int {
 	return env.points[len(env.points)-1].value
 }
 
-func advanceEnvelope(env xmEnvelope, pos int, keyOn bool) int {
+// tickEnvelope matches libxm's xm_tick_envelope: loop-check, sustain-check,
+// then read+advance. Returns the envelope value (0..64 for volume, 0..64 for panning).
+func tickEnvelope(env xmEnvelope, pos *int, keyOn bool) int {
 	if !env.enabled || len(env.points) < 2 {
-		return pos
+		return envelopeValue(env, *pos)
 	}
 	if env.loopEnabled && env.loopEnd >= 0 && env.loopEnd < len(env.points) &&
 		env.loopStart >= 0 && env.loopStart < len(env.points) {
 		endFrame := env.points[env.loopEnd].frame
-		if pos == endFrame {
-			if !keyOn || !env.sustainEnabled || env.sustainPoint != env.loopEnd {
-				pos = env.points[env.loopStart].frame
+		if *pos == endFrame {
+			if keyOn || !env.sustainEnabled || env.sustainPoint != env.loopEnd {
+				*pos = env.points[env.loopStart].frame
 			}
 		}
 	}
 	if keyOn && env.sustainEnabled && env.sustainPoint >= 0 && env.sustainPoint < len(env.points) {
 		sf := env.points[env.sustainPoint].frame
-		if pos == sf {
-			return pos
+		if *pos == sf {
+			return env.points[env.sustainPoint].value
 		}
 	}
-	return pos + 1
+	val := envelopeValue(env, *pos)
+	*pos++
+	return val
 }
 
 func pitchToStep(pitch float64, sampleRate int) float64 {
@@ -441,7 +444,6 @@ func (p *Player) Init(tune []byte, sampleRate int) string {
 	for i := range p.channels {
 		p.channels[i].pan = 128
 		p.channels[i].fadeoutVol = 32767
-		p.channels[i].sampleDir = 1
 		p.channels[i].delayTick = -1
 		p.channels[i].volEnvValue = 1.0
 		p.channels[i].panEnvValue = 32.0
@@ -454,7 +456,7 @@ func (p *Player) Init(tune []byte, sampleRate int) string {
 func (p *Player) Stop() {
 	for i := range p.channels {
 		pan := p.channels[i].pan
-		p.channels[i] = xmChannel{pan: pan, fadeoutVol: 32767, sampleDir: 1, delayTick: -1, volEnvValue: 1.0, panEnvValue: 32.0}
+		p.channels[i] = xmChannel{pan: pan, fadeoutVol: 32767, delayTick: -1, volEnvValue: 1.0, panEnvValue: 32.0}
 	}
 	p.globalVol = 64
 	p.pos = 0
@@ -796,7 +798,6 @@ func (p *Player) triggerNote(ch *xmChannel, ev xmEvent, noteIdx int) {
 	ch.playPitch = ch.basePitch
 	ch.targetPitch = ch.basePitch
 	ch.samplePos = 0
-	ch.sampleDir = 1
 	ch.active = true
 
 	if ev.effect == 0x09 {
@@ -1242,7 +1243,6 @@ func (p *Player) doMultiRetrig(ch *xmChannel, param uint8) {
 	ch.retrigTicks = 0
 
 	ch.samplePos = 0
-	ch.sampleDir = 1
 	ch.active = ch.sample != nil
 
 	var addTab = [16]int{0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 2, 4, 8, 16, 0, 0}
@@ -1263,16 +1263,13 @@ func (p *Player) advanceChannelTick(ch *xmChannel) {
 	if ch.inst == nil {
 		return
 	}
-	// libxm: read envelope value at current pos, THEN advance counter
 	if ch.inst.volEnv.enabled {
-		ch.volEnvValue = float64(envelopeValue(ch.inst.volEnv, ch.volEnvPos)) / 64.0
-		ch.volEnvPos = advanceEnvelope(ch.inst.volEnv, ch.volEnvPos, ch.keyOn)
+		ch.volEnvValue = float64(tickEnvelope(ch.inst.volEnv, &ch.volEnvPos, ch.keyOn)) / 64.0
 	} else {
 		ch.volEnvValue = 1.0
 	}
 	if ch.inst.panEnv.enabled {
-		ch.panEnvValue = float64(envelopeValue(ch.inst.panEnv, ch.panEnvPos))
-		ch.panEnvPos = advanceEnvelope(ch.inst.panEnv, ch.panEnvPos, ch.keyOn)
+		ch.panEnvValue = float64(tickEnvelope(ch.inst.panEnv, &ch.panEnvPos, ch.keyOn))
 	} else {
 		ch.panEnvValue = 32.0
 	}

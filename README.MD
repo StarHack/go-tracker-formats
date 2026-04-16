@@ -36,3 +36,9 @@ Ports some concepts of Reality Adlib Tracker context:
 
 - **XM / FastTracker 2** should not be treated as “just another MOD variant” in the same package. It belongs in its own `formats/xm/` package because XM adds a substantially different file structure and playback model: compressed pattern events, instruments with note-to-sample maps, envelopes, fadeout, 8/16-bit delta-coded samples, ping-pong loops, volume-column commands, and linear-frequency playback.
 - The existing test only compares row/tempo/speed state transitions — not actual audio samples. We need to compare real PCM output. Let me write a test that does that.
+
+## Testcases
+
+```
+go test -run TestXM_ListSamples -v ./test
+```

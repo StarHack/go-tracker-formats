@@ -208,6 +208,7 @@ type Player struct {
 	// Pending jumps (set during row processing, applied afterwards)
 	nextPos     int // Bxx: jump to order position (-1 = none)
 	nextRow     int // Dxx: break to row in next pattern (-1 = none)
+	nextRowSame bool
 	patDelayCnt int // EEx pattern delay counter
 
 	// Repeat detection
@@ -253,6 +254,15 @@ func (p *Player) Init(tune []byte, sampleRate int) string {
 		}
 		s.loopStart = (int(tune[b+26])<<8 | int(tune[b+27])) * 2
 		s.loopLen = (int(tune[b+28])<<8 | int(tune[b+29])) * 2
+		if s.loopStart > s.length {
+			s.loopStart = s.length
+		}
+		if s.loopStart+s.loopLen > s.length {
+			s.loopLen = s.length - s.loopStart
+		}
+		if s.loopLen < 2 {
+			s.loopLen = 0
+		}
 	}
 
 	// Song length & restart
@@ -346,11 +356,13 @@ func (p *Player) Stop() {
 	p.samPerTick = p.calcSamPerTick()
 	p.nextPos = -1
 	p.nextRow = -1
+	p.nextRowSame = false
 	p.patDelayCnt = 0
 	p.repeating = false
 	for i := range p.orderMap {
 		p.orderMap[i] = 0
 	}
+	p.orderMap[0] = 1
 }
 
 // GetDescription returns the song title as bytes.
@@ -374,9 +386,7 @@ func (p *Player) Sample(left, right *int16) bool {
 		p.tick++
 		if p.tick >= p.speed+p.patDelayCnt*p.speed {
 			p.tick = 0
-			if p.patDelayCnt > 0 {
-				p.patDelayCnt--
-			}
+			p.patDelayCnt = 0
 			p.advanceRow()
 		}
 		p.samPerTick = p.calcSamPerTick()
@@ -754,6 +764,7 @@ func (p *Player) applyEffect(ch *modChannel, effect, param, x, y uint8, tick0 bo
 			}
 			if p.nextRow < 0 || nr < p.nextRow {
 				p.nextRow = nr
+				p.nextRowSame = false
 			}
 		}
 
@@ -813,6 +824,7 @@ func (p *Player) applyExtended(ch *modChannel, x, y uint8, tick0 bool) {
 				}
 				if ch.loopCnt > 0 {
 					p.nextRow = ch.loopRow
+					p.nextRowSame = true
 					ch.loopCnt--
 					if ch.loopCnt == 0 {
 						ch.loopArmed = false
@@ -937,18 +949,20 @@ func (p *Player) advanceRow() {
 	newPos := p.pos
 	newRow := p.row + 1
 	wrapped := false
+	hadNextRow := p.nextRow >= 0
 
-	if p.nextRow >= 0 {
+	if hadNextRow {
 		newRow = p.nextRow
-		p.nextRow = -1
-		if p.nextPos < 0 {
+		if p.nextPos < 0 && !p.nextRowSame {
 			newPos++
 		}
+		p.nextRow = -1
+		p.nextRowSame = false
 	}
 	if p.nextPos >= 0 {
 		newPos = p.nextPos
 		p.nextPos = -1
-		if p.nextRow < 0 {
+		if !hadNextRow {
 			newRow = 0
 		}
 	}

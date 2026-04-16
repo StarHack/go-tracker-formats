@@ -228,16 +228,44 @@ type Player struct {
 	filterL       int32
 	filterR       int32
 
+	// 0 = mono/centered, 255 = classic hard stereo.
+	stereoSeparation int32
+
 	initialised bool
 }
 
 // Compile-time interface check.
 var _ formats.PCMTracker = (*Player)(nil)
 
+// SetStereoSeparation controls MOD channel stereo spread.
+// 0 collapses all channels to centered mono, 255 keeps classic hard panning.
+func (p *Player) SetStereoSeparation(v int) {
+	if v < 0 {
+		v = 0
+	}
+	if v > 255 {
+		v = 255
+	}
+	p.stereoSeparation = int32(v)
+}
+
+// SetMono is a convenience helper for mono vs classic stereo playback.
+func (p *Player) SetMono(enabled bool) {
+	if enabled {
+		p.stereoSeparation = 0
+		return
+	}
+	p.stereoSeparation = 255
+}
+
 // Init prepares the player. Returns "" on success.
 func (p *Player) Init(tune []byte, sampleRate int) string {
 	p.initialised = false
 	p.data = tune
+	if p.stereoSeparation == 0 {
+		// Default to mono unless the caller explicitly requests stereo.
+		p.stereoSeparation = 0
+	}
 
 	if err := Validate(tune); err != "" {
 		return err
@@ -336,9 +364,8 @@ func (p *Player) Init(tune []byte, sampleRate int) string {
 		}
 	}
 
-	// Amiga channel panning: LRRL (classic hard panning, softened to 75%).
-	// 0=full left (0), 64=quarter left (64), 192=quarter right (192), 255=full right.
-	defaultPan := []int{32, 224, 224, 32}
+	// Amiga channel panning: classic ProTracker LRRL hard panning.
+	defaultPan := []int{0, 255, 255, 0}
 
 	p.channels = make([]modChannel, p.numChan)
 	for i := range p.channels {
@@ -446,18 +473,29 @@ func (p *Player) Sample(left, right *int16) bool {
 		}
 		ch.posStep = float64(amigaClock) / (float64(period) * float64(p.sampleRate))
 
-		// Read sample (linear interpolation)
+		// Read sample with the same forward-only loop model as the XM player.
 		pos := ch.pos
+		effLen := s.length
+		if s.hasLoop() {
+			effLen = s.loopStart + s.loopLen
+			if effLen > s.length {
+				effLen = s.length
+			}
+		}
 		i0 := int(pos)
+		if i0 < 0 || i0 >= effLen {
+			ch.active = false
+			continue
+		}
 		var s0, s1 int16
-		if i0 < len(s.data) {
-			s0 = int16(s.data[i0])
-		}
+		s0 = int16(s.data[i0])
 		i1 := i0 + 1
-		if s.hasLoop() && i1 >= s.loopStart+s.loopLen {
+		if s.hasLoop() && i1 >= effLen {
 			i1 = s.loopStart
+		} else if i1 >= s.length {
+			i1 = i0
 		}
-		if i1 < len(s.data) {
+		if i1 >= 0 && i1 < len(s.data) {
 			s1 = int16(s.data[i1])
 		}
 		frac := pos - float64(i0)
@@ -467,9 +505,10 @@ func (p *Player) Sample(left, right *int16) bool {
 		vol := int32(ch.tremVol)
 		sampleScaled := int32(sample) * vol * 256 / 64
 
-		// Panning
-		panR := int32(ch.pan) // 0-255
-		panL := int32(255 - ch.pan)
+		// Optional stereo separation control: 0 => centered mono, 255 => classic MOD hard panning.
+		pan := 128 + ((int32(ch.pan)-128)*p.stereoSeparation)/255
+		panR := pan
+		panL := 255 - pan
 		lAcc += sampleScaled * panL / 255
 		rAcc += sampleScaled * panR / 255
 
@@ -477,17 +516,28 @@ func (p *Player) Sample(left, right *int16) bool {
 		ch.pos += ch.posStep
 		floorPos := int(ch.pos)
 		if s.hasLoop() {
-			for floorPos >= s.loopStart+s.loopLen {
-				ch.pos -= float64(s.loopLen)
-				floorPos = int(ch.pos)
+			end := float64(s.loopStart + s.loopLen)
+			if ch.pos >= end {
+				ch.pos -= float64(s.loopStart)
+				ch.pos = math.Mod(ch.pos, float64(s.loopLen))
+				if ch.pos < 0 {
+					ch.pos += float64(s.loopLen)
+				}
+				ch.pos += float64(s.loopStart)
 			}
 		} else if floorPos >= s.length {
 			ch.active = false
 		}
 	}
 
-	// Scale: up to 32 channels, 14-bit samples → up to 21 bits; scale to 15-bit for headroom
-	divisor := int32(p.numChan * 4)
+	// Use a hotter tracker-style output level.
+	// The previous `numChan * 4` divisor left MOD playback far quieter than
+	// ProTracker/OpenMPT. Dividing by channel count preserves headroom while
+	// restoring a more typical playback loudness.
+	divisor := int32(p.numChan)
+	if divisor < 1 {
+		divisor = 1
+	}
 	lOut := int32(lAcc / divisor)
 	rOut := int32(rAcc / divisor)
 	if p.filterEnabled {

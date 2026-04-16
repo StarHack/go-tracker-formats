@@ -39,6 +39,13 @@ Ports some concepts of Reality Adlib Tracker context:
 
 ## Testcases
 
+### XM
+
 ```
 go test -run TestXM_ListSamples -v ./test
+
+go test -run TestXM_ExtractSamples -v ./test -args \
+  -xm_extract_samples "Instrument 3/drum - orchestra,Instrument 41/drum - core" \
+  -xm_extract_out_dir "../sample-data/extracted"
+
 ```

@@ -3,7 +3,7 @@
 //
 // Usage:
 //
-//	rad2wav input.{rad,mod,xm} [-o output.wav] [-rate 44100]
+//	rad2wav input.{rad,mod,s3m,xm} [-o output.wav] [-rate 44100]
 package main
 
 import (
@@ -18,6 +18,7 @@ import (
 	"rad2wav/formats/mod"
 	radv1 "rad2wav/formats/rad-v1"
 	radv2 "rad2wav/formats/rad-v2"
+	"rad2wav/formats/s3m"
 	"rad2wav/formats/xm"
 	"rad2wav/opal"
 )
@@ -28,7 +29,7 @@ func main() {
 	outFlag := flag.String("o", "", "output WAV file (default: input basename + .wav)")
 	rateFlag := flag.Int("rate", defaultSampleRate, "output sample rate in Hz")
 	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: rad2wav [options] input.{rad,mod,xm}\n\nOptions:\n")
+		fmt.Fprintf(os.Stderr, "Usage: rad2wav [options] input.{rad,mod,s3m,xm}\n\nOptions:\n")
 		flag.PrintDefaults()
 	}
 	flag.Parse()
@@ -112,11 +113,15 @@ func detect(tune []byte) (interface{}, string) {
 	if e := xm.Validate(tune); e == "" {
 		return &xm.Player{}, ""
 	}
+	// S3M
+	if e := s3m.Validate(tune); e == "" {
+		return &s3m.Player{}, ""
+	}
 	// MOD
 	if e := mod.Validate(tune); e == "" {
 		return &mod.Player{}, ""
 	}
-	return nil, "Unrecognised file format (not RAD v1/v2, XM, or MOD)."
+	return nil, "Unrecognised file format (not RAD v1/v2, XM, S3M, or MOD)."
 }
 
 // renderToSamples dispatches to the appropriate render path.
@@ -225,6 +230,9 @@ func printInfo(tracker interface{}) {
 	case *mod.Player:
 		label = "MOD"
 		desc = t.GetDescription()
+	case *s3m.Player:
+		label = "S3M"
+		desc = t.GetDescription()
 	case *xm.Player:
 		label = "XM"
 		desc = t.GetDescription()
@@ -234,7 +242,7 @@ func printInfo(tracker interface{}) {
 		return
 	}
 	switch tracker.(type) {
-	case *mod.Player, *xm.Player:
+	case *mod.Player, *s3m.Player, *xm.Player:
 		fmt.Printf("Title:  %s\n", string(desc))
 	default:
 		printRADDescription(desc)

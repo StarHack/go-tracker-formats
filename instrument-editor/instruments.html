@@ -721,16 +721,17 @@ function renderSample(p) {
   }
 
   if (p.family === "drum_core") {
-    // XM-style "core" layer: square operator + stepped pitch (plateaus at each
-    // frequency so cycles stay wide for a beat before dropping), not a smooth sine sweep.
-    const fHigh = f0 * lerp(3.0, 5.8, bright);
-    const fLow = f0 * lerp(0.5, 0.95, 1 - punch);
-    const numSteps = Math.max(6, Math.round(lerp(12, 6, chara)));
-    const sweepEnd = p.duration * lerp(0.78, 0.92, punch);
+    // Bass-first, plateau-heavy square operator:
+    // hold each pitch rung longer, with minimal kick transient.
+    const fHigh = f0 * lerp(2.4, 4.2, bright);
+    const fLow = f0 * lerp(0.42, 0.72, 1 - punch);
+    const numSteps = Math.max(4, Math.round(lerp(8, 4, chara)));
+    const sweepEnd = p.duration * lerp(0.86, 0.96, punch);
     const stepTimes = new Float32Array(numSteps + 1);
     for (let k = 0; k <= numSteps; k++) {
       const u = k / numSteps;
-      const curve = lerp(1.0, 0.62, punch);
+      // Near-linear step-time distribution gives stronger plateaus.
+      const curve = lerp(1.02, 0.9, punch);
       stepTimes[k] = Math.pow(u, curve) * sweepEnd;
     }
     const stepFreqs = new Float32Array(numSteps);
@@ -741,40 +742,41 @@ function renderSample(p) {
     let phMain = 0;
     let phSub = 0;
     let phHarm = 0;
-    const click = 0.24;
-    const noiseAmt = 0.038;
+    const click = 0.09;
+    const noiseAmt = 0.016;
     for (let i = 0; i < frames; i++) {
       const t = i / p.sr;
       let step = 0;
       while (step < numSteps - 1 && t >= stepTimes[step + 1]) step++;
       const fMain = stepFreqs[step];
-      const fSub = fMain * lerp(0.38, 0.48, chara);
+      const fSub = fMain * lerp(0.3, 0.42, chara);
       phMain += fMain / p.sr;
-      const pw = 0.5 + 0.04 * Math.sin(2 * Math.PI * (4.7 + chara) * t);
-      const mainSq = pulse(phMain, clamp(pw, 0.42, 0.58));
+      const pw = 0.5 + 0.015 * Math.sin(2 * Math.PI * (2.2 + chara * 0.4) * t);
+      const mainSq = pulse(phMain, clamp(pw, 0.47, 0.53));
 
       phHarm += (fMain * 2.03) / p.sr;
-      const harmSq = pulse(phHarm, 0.5) * 0.18 * (0.35 + bright * 0.65);
+      const harmSq = pulse(phHarm, 0.5) * 0.1 * (0.25 + bright * 0.45);
 
       phSub += fSub / p.sr;
       const subSq = pulse(phSub, 0.5);
 
-      const bodyEnv = Math.exp(-t * lerp(5.5, 12, 1 - chara));
-      const tailEnv = Math.exp(-t * (3.2 + punch * 1.5));
-      const clickEnv = Math.exp(-t * (120 + punch * 140));
+      const bodyEnv = Math.exp(-t * lerp(3.2, 6.5, 1 - chara));
+      const tailEnv = Math.exp(-t * (2.2 + punch * 1.0));
+      const clickEnv = Math.exp(-t * (95 + punch * 90));
       const c = (nz[i % nz.length] * 0.72 + Math.sign(mainSq)) * clickEnv * click;
       const n = nz[(i * 7 + 13) % nz.length] * Math.exp(-t * 48) * noiseAmt;
 
-      let s = (mainSq * 0.62 + harmSq + subSq * 0.42 * tailEnv + c + n) * bodyEnv;
-      s = softClip(s * (1.35 + dirt * 0.5), 0.55 + dirt * 0.35);
-      s = bitCrush(s, lerp(0.18, 0.52, dirt));
-      const pan = Math.sin(2 * Math.PI * 0.09 * t) * width * 0.1;
+      // Heavily bass weighted, tiny click component.
+      let s = (mainSq * 0.44 + subSq * 0.72 * tailEnv + harmSq + c + n) * bodyEnv;
+      s = softClip(s * (1.22 + dirt * 0.38), 0.48 + dirt * 0.28);
+      s = bitCrush(s, lerp(0.14, 0.4, dirt));
+      const pan = Math.sin(2 * Math.PI * 0.07 * t) * width * 0.06;
       const [l, r] = panMix(s, pan);
       L[i] = l * p.volume;
       R[i] = r * p.volume;
     }
-    const fl = onePoleHP(onePoleLP(L, lerp(1100, 6800, bright), p.sr), 20, p.sr);
-    const fr = onePoleHP(onePoleLP(R, lerp(1100, 6800, bright), p.sr), 20, p.sr);
+    const fl = onePoleHP(onePoleLP(L, lerp(600, 3400, bright), p.sr), 14, p.sr);
+    const fr = onePoleHP(onePoleLP(R, lerp(600, 3400, bright), p.sr), 14, p.sr);
     for (let i = 0; i < frames; i++) {
       L[i] = fl[i];
       R[i] = fr[i];

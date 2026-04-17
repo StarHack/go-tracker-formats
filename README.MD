@@ -5,10 +5,10 @@ Supports parsing the following formats:
 - RAD (v1/v2)
 - MOD
 - XM (FastTracker 2 style modules)
+- S3M (partially)
 
 Planned support (not yet there):
 
-- S3M
 - IT
 
 Sample files can be downloaded from:
@@ -18,11 +18,11 @@ https://www.3eality.com/Public/Modules/
 
 ## Formats
 
-Multiple formats were implemented independently and the idea is you may use parts of this library for your use case.
+Multiple formats were implemented independently and the idea is you may use parts of this library for your particular use case.
 
 ### RAD
 
-Ports some concepts of Reality Adlib Tracker format into pure Go code:
+Ports some concepts of Reality Adlib Tracker format into pure Go code. They do provide modules available for download on https://www.3eality.com/Public/Modules/
 
 - **OPAL** is the OPL3 emulator bundled with RAD V1/V2. It emulates Yamaha OPL3 FM-synthesis hardware so RAD tunes can be played on machines that do not have real OPL3 hardware. In the RAD docs, it is explicitly described as “an OPL3 emulator” included with RAD V1/V2.
 
@@ -39,6 +39,10 @@ Ports some concepts of Reality Adlib Tracker format into pure Go code:
 ### XM
 
 - **XM / FastTracker 2** implemented in its own `formats/xm/` package because XM adds a substantially different file structure and playback model: compressed pattern events, instruments with note-to-sample maps, envelopes, fadeout, 8/16-bit delta-coded samples, ping-pong loops, volume-column commands, and linear-frequency playback.
+
+### S3M
+
+- Only supports some core effects so far
 
 ## Testcases
 

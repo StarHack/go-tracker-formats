@@ -1,6 +1,6 @@
 # go-tracker-formats
 
-Supports parsing the following formats:
+Supports working with the following listed formats. For implementation guidelines on how to work with each format, check out `examples/` directory.
 
 - RAD (v1/v2)
 - MOD
@@ -9,12 +9,8 @@ Supports parsing the following formats:
 
 Planned support (not yet there):
 
-- IT
-
-Sample files can be downloaded from:
-
-https://www.3eality.com/Public/Modules/
-
+- IT (Impulse Tracker module)
+- FTM (FamiTracker music / NES chiptune scene)
 
 ## Formats
 

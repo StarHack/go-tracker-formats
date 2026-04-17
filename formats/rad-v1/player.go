@@ -1,5 +1,3 @@
-// player.go - RAD v1 player (OPL2, 9 channels, 2-op).
-// Pure Go port of the RAD v1 replayer by Shayde/Reality (public domain).
 package radv1
 
 import "github.com/StarHack/go-tracker-formats/formats"
@@ -34,11 +32,9 @@ var radOpOffsets2 = [9][2]uint16{
 	{0x013, 0x010}, {0x014, 0x011}, {0x015, 0x012},
 }
 
-// radAlgCarriers[alg][op]: true if the op output level is scaled by channel volume.
-// In the v1 format operators[1] (index 1) is the output-level carrier for alg 0 (FM).
 var radAlgCarriers = [2][2]bool{
-	{false, true}, // alg 0: FM
-	{true, true},  // alg 1: additive
+	{false, true},
+	{true, true},
 }
 
 type radInstrument struct {
@@ -91,15 +87,13 @@ type Player struct {
 	lineJump    int8
 	opl3Regs    [512]uint8
 	description []byte
-	// note scratch
-	noteNum   int8
-	octaveNum int8
-	instNum   uint8
-	effectNum uint8
-	param     uint8
+	noteNum     int8
+	octaveNum   int8
+	instNum     uint8
+	effectNum   uint8
+	param       uint8
 }
 
-// compile-time interface check
 var _ formats.Tracker = (*Player)(nil)
 
 // Init prepares the player for a v1 tune. Returns "" on success, error string on failure.
@@ -121,7 +115,6 @@ func (p *Player) Init(tune []byte, oplFn func(uint16, uint8)) string {
 	if flags&0x40 != 0 {
 		p.hertz = 18
 	}
-	// Description: present only when flags bit 7 is set.
 	p.description = nil
 	if flags&0x80 != 0 {
 		start := s
@@ -190,7 +183,7 @@ func (p *Player) Stop() {
 	p.setOPL3(8, 0)
 	p.setOPL3(0xBD, 0)
 	p.setOPL3(0x104, 0)
-	p.setOPL3(0x105, 0) // OPL2 mode (no OPL3 enable)
+	p.setOPL3(0x105, 0)
 	p.playTime = 0
 	p.repeating = false
 	for i := range p.orderMap {
@@ -407,7 +400,6 @@ func (p *Player) loadInstrument(chanNum int) {
 	if inst.algorithm == 1 {
 		algBit = 1
 	}
-	// 0x30 = bits 4+5 = left+right speakers enabled (required by Opal emulator).
 	p.setOPL3(0xC0+uint16(chanNum), 0x30|(inst.feedback<<1)|algBit)
 	for i := 0; i < 2; i++ {
 		op := inst.operators[i]

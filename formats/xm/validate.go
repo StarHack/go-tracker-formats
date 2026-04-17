@@ -1,5 +1,3 @@
-// validate.go - XM file validator.
-// Supports FastTracker 2 Extended Module files.
 package xm
 
 import (
@@ -26,6 +24,39 @@ type moduleLayout struct {
 	Tempo           int
 	BPM             int
 	Orders          []byte
+}
+
+// Validate checks a FastTracker 2 XM file for structural validity.
+// Returns nil if valid, or an error otherwise.
+func Validate(data []byte) error {
+	layout, ok := detectHeader(data)
+	if !ok {
+		if len(data) < xmMinHeaderSize {
+			return fmt.Errorf("not an XM file: too short")
+		}
+		return fmt.Errorf("not a valid FastTracker 2 XM file")
+	}
+	for _, order := range layout.Orders {
+		if order >= byte(layout.PatternCount) && order != 0xFF {
+			return fmt.Errorf("XM order list references a non-existent pattern")
+		}
+	}
+	offset := 60 + layout.HeaderSize
+	for i := 0; i < layout.PatternCount; i++ {
+		var err error
+		offset, err = validatePattern(data, offset, layout.Channels)
+		if err != nil {
+			return err
+		}
+	}
+	for i := 0; i < layout.InstrumentCount; i++ {
+		var err error
+		offset, err = validateInstrument(data, offset)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func readU16LE(data []byte, off int) (uint16, bool) {
@@ -94,17 +125,17 @@ func detectHeader(data []byte) (moduleLayout, bool) {
 	}, true
 }
 
-func validatePattern(data []byte, offset int, channels int) (int, string) {
+func validatePattern(data []byte, offset int, channels int) (int, error) {
 	if offset+xmMinPatternHeader > len(data) {
-		return offset, "XM file is truncated in pattern header."
+		return offset, fmt.Errorf("XM file is truncated in pattern header")
 	}
 	hdrLen32, _ := readU32LE(data, offset)
 	hdrLen := int(hdrLen32)
 	if hdrLen < xmMinPatternHeader || offset+hdrLen > len(data) {
-		return offset, "XM file contains an invalid pattern header."
+		return offset, fmt.Errorf("XM file contains an invalid pattern header")
 	}
 	if data[offset+4] != 0 {
-		return offset, "XM file uses unsupported pattern packing type."
+		return offset, fmt.Errorf("XM file uses unsupported pattern packing type")
 	}
 	rows, _ := readU16LE(data, offset+5)
 	packedSize, _ := readU16LE(data, offset+7)
@@ -114,7 +145,7 @@ func validatePattern(data []byte, offset int, channels int) (int, string) {
 	patDataOff := offset + hdrLen
 	patDataEnd := patDataOff + int(packedSize)
 	if patDataEnd > len(data) {
-		return offset, "XM file is truncated in pattern data."
+		return offset, fmt.Errorf("XM file is truncated in pattern data")
 	}
 	cells := int(rows) * channels
 	pos := patDataOff
@@ -123,7 +154,7 @@ func validatePattern(data []byte, offset int, channels int) (int, string) {
 			break
 		}
 		if pos >= patDataEnd {
-			return offset, "XM pattern data ends before all rows/channels are described."
+			return offset, fmt.Errorf("XM pattern data ends before all rows/channels are described")
 		}
 		b := data[pos]
 		pos++
@@ -145,49 +176,49 @@ func validatePattern(data []byte, offset int, channels int) (int, string) {
 				need++
 			}
 			if pos+need > patDataEnd {
-				return offset, "XM pattern contains a truncated packed event."
+				return offset, fmt.Errorf("XM pattern contains a truncated packed event")
 			}
 			pos += need
 		} else {
 			if pos+4 > patDataEnd {
-				return offset, "XM pattern contains a truncated event."
+				return offset, fmt.Errorf("XM pattern contains a truncated event")
 			}
 			pos += 4
 		}
 	}
-	return patDataEnd, ""
+	return patDataEnd, nil
 }
 
-func validateInstrument(data []byte, offset int) (int, string) {
+func validateInstrument(data []byte, offset int) (int, error) {
 	if offset+xmMinInstrHeader > len(data) {
-		return offset, "XM file is truncated in instrument header."
+		return offset, fmt.Errorf("XM file is truncated in instrument header")
 	}
 	instrSize32, _ := readU32LE(data, offset)
 	instrSize := int(instrSize32)
 	if instrSize < xmMinInstrHeader || offset+instrSize > len(data) {
-		return offset, "XM file contains an invalid instrument header."
+		return offset, fmt.Errorf("XM file contains an invalid instrument header")
 	}
 	numSamples, _ := readU16LE(data, offset+27)
 	sampleHdrSize := 0
 	if numSamples > 0 {
 		v, ok := readU32LE(data, offset+29)
 		if !ok {
-			return offset, "XM file is truncated in instrument sample-header size."
+			return offset, fmt.Errorf("XM file is truncated in instrument sample-header size")
 		}
 		sampleHdrSize = int(v)
 		if sampleHdrSize < xmSampleHeaderSize {
-			return offset, "XM instrument contains an invalid sample header size."
+			return offset, fmt.Errorf("XM instrument contains an invalid sample header size")
 		}
 	}
 	sampleHeadersOff := offset + instrSize
 	sampleDataOff := sampleHeadersOff + int(numSamples)*sampleHdrSize
 	if sampleDataOff > len(data) {
-		return offset, "XM file is truncated in sample headers."
+		return offset, fmt.Errorf("XM file is truncated in sample headers")
 	}
 	cursor := sampleHeadersOff
 	for i := 0; i < int(numSamples); i++ {
 		if cursor+sampleHdrSize > len(data) {
-			return offset, "XM file is truncated in sample header table."
+			return offset, fmt.Errorf("XM file is truncated in sample header table")
 		}
 		length32, _ := readU32LE(data, cursor)
 		loopStart32, _ := readU32LE(data, cursor+4)
@@ -199,50 +230,17 @@ func validateInstrument(data []byte, offset int) (int, string) {
 		loopLen := int(loopLen32)
 		if is16 {
 			if length%2 != 0 || loopStart%2 != 0 || loopLen%2 != 0 {
-				return offset, fmt.Sprintf("XM sample %d uses invalid 16-bit byte counts.", i+1)
+				return offset, fmt.Errorf("XM sample %d uses invalid 16-bit byte counts", i+1)
 			}
 		}
 		if loopStart > length || loopStart+loopLen > length {
-			return offset, fmt.Sprintf("XM sample %d has invalid loop bounds.", i+1)
+			return offset, fmt.Errorf("XM sample %d has invalid loop bounds", i+1)
 		}
 		sampleDataOff += length
 		if sampleDataOff > len(data) {
-			return offset, fmt.Sprintf("XM file is truncated in sample %d data.", i+1)
+			return offset, fmt.Errorf("XM file is truncated in sample %d data", i+1)
 		}
 		cursor += sampleHdrSize
 	}
-	return sampleDataOff, ""
-}
-
-// Validate checks a FastTracker 2 XM file for structural validity.
-// Returns "" if valid, or an error message otherwise.
-func Validate(data []byte) string {
-	layout, ok := detectHeader(data)
-	if !ok {
-		if len(data) < xmMinHeaderSize {
-			return "Not an XM file: too short."
-		}
-		return "Not a valid FastTracker 2 XM file."
-	}
-	for _, order := range layout.Orders {
-		if order >= byte(layout.PatternCount) && order != 0xFF {
-			return "XM order list references a non-existent pattern."
-		}
-	}
-	offset := 60 + layout.HeaderSize
-	for i := 0; i < layout.PatternCount; i++ {
-		var err string
-		offset, err = validatePattern(data, offset, layout.Channels)
-		if err != "" {
-			return err
-		}
-	}
-	for i := 0; i < layout.InstrumentCount; i++ {
-		var err string
-		offset, err = validateInstrument(data, offset)
-		if err != "" {
-			return err
-		}
-	}
-	return ""
+	return sampleDataOff, nil
 }

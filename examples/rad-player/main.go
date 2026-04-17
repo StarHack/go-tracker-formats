@@ -72,13 +72,13 @@ func detectRADPlayer(tune []byte) (formats.Tracker, error) {
 	}
 	switch tune[0x10] {
 	case 0x10:
-		if e := radv1.Validate(tune); e != "" {
-			return nil, fmt.Errorf("rad v1 validate failed: %s", e)
+		if e := radv1.Validate(tune); e != nil {
+			return nil, fmt.Errorf("rad v1 validate failed: %w", e)
 		}
 		return &radv1.Player{}, nil
 	case 0x21:
-		if e := radv2.Validate(tune); e != "" {
-			return nil, fmt.Errorf("rad v2 validate failed: %s", e)
+		if e := radv2.Validate(tune); e != nil {
+			return nil, fmt.Errorf("rad v2 validate failed: %w", e)
 		}
 		return &radv2.Player{}, nil
 	default:

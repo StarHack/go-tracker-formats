@@ -1,27 +1,21 @@
-// player.go - ProTracker-compatible MOD player.
-// Implements formats.PCMTracker.
-// Supports M.K., M!K!, FLT4/8, xCHN, xxCH, full ProTracker effect set.
 package mod
 
 import (
-	"math"
 	"github.com/StarHack/go-tracker-formats/formats"
+	"math"
 	"strings"
 )
 
-const amigaClock = 3579545 // NTSC Paula
+const amigaClock = 3579545
 
-// Finetune nibble (0-15) → signed semitone-eighths (-8…+7).
 var finetuneTab = [16]int8{0, 1, 2, 3, 4, 5, 6, 7, -8, -7, -6, -5, -4, -3, -2, -1}
 
-// Amiga periods for C-1…B-3 at finetune 0 (ProTracker standard).
 var basePeriods = [36]uint16{
 	856, 808, 762, 720, 678, 640, 604, 570, 538, 508, 480, 453,
 	428, 404, 381, 360, 339, 320, 302, 285, 269, 254, 240, 226,
 	214, 202, 190, 180, 170, 160, 151, 143, 135, 127, 120, 113,
 }
 
-// Sine table: 64 entries, amplitude 0-255 (sin wave, positive half).
 var sineTab [64]int16
 
 func init() {
@@ -30,16 +24,14 @@ func init() {
 	}
 }
 
-// periodForNote returns the Amiga period for note index n (0=C-1) at the given finetune nibble.
 func periodForNote(n int, ft uint8) uint16 {
 	if n < 0 || n >= 36 {
 		return 0
 	}
-	shift := float64(finetuneTab[ft&15]) / 96.0 // finetune units → octaves
+	shift := float64(finetuneTab[ft&15]) / 96.0
 	return uint16(math.Round(float64(basePeriods[n]) * math.Pow(2.0, -shift)))
 }
 
-// noteForPeriod finds the closest note index (0-35) for a period value at finetune 0.
 func noteForPeriod(period uint16) int {
 	best, bestD := 0, uint16(0xFFFF)
 	for i, p := range basePeriods {
@@ -54,25 +46,22 @@ func noteForPeriod(period uint16) int {
 	return best
 }
 
-// waveOutput returns the oscillator value for pos (0-63) for the given wave type.
-// Returns a value in -255…+255.
 func waveOutput(wave uint8, pos int) int16 {
 	switch wave & 3 {
-	case 0: // sine
+	case 0:
 		return sineTab[pos&63]
-	case 1: // ramp down
+	case 1:
 		return int16(255 - (pos&63)*8)
-	case 2: // square
+	case 2:
 		if pos&32 != 0 {
 			return -255
 		}
 		return 255
-	default: // random
+	default:
 		return int16((pos * 1664525) & 255)
 	}
 }
 
-// clampVol clamps a volume to [0, 64].
 func clampVol(v int) int {
 	if v < 0 {
 		return 0
@@ -83,7 +72,6 @@ func clampVol(v int) int {
 	return v
 }
 
-// clampPeriod clamps an Amiga period to [113, 856].
 func clampPeriod(p int) uint16 {
 	if p < 113 {
 		return 113
@@ -94,97 +82,77 @@ func clampPeriod(p int) uint16 {
 	return uint16(p)
 }
 
-// ─── Sample descriptor ───────────────────────────────────────────────────────
-
 type modSample struct {
 	name      string
-	length    int   // bytes
-	finetune  uint8 // raw nibble 0-15
-	volume    uint8 // 0-64
-	loopStart int   // bytes
-	loopLen   int   // bytes (≤1 = no loop)
+	length    int
+	finetune  uint8
+	volume    uint8
+	loopStart int
+	loopLen   int
 	origData  []int8
 	data      []int8
 }
 
 func (s *modSample) hasLoop() bool { return s.loopLen > 2 }
 
-// ─── Channel state ───────────────────────────────────────────────────────────
-
 type modChannel struct {
-	// Current sample
 	sample   *modSample
 	finetune uint8
 
-	// Pitch
-	period     uint16 // base Amiga period
-	playPeriod uint16 // effective playback period after arp/vibrato
-	note       int    // note index 0-35 (-1 = none)
-	portDst    uint16 // tone-portamento target period
-	portSpd    uint16 // tone-portamento speed
-	portaUp    uint8  // 1xx memory
-	portaDown  uint8  // 2xx memory
-	glissando  bool   // E3x: snap tone-portamento to semitone
+	period     uint16
+	playPeriod uint16
+	note       int
+	portDst    uint16
+	portSpd    uint16
+	portaUp    uint8
+	portaDown  uint8
+	glissando  bool
 
-	// Volume
-	volume  int // 0-64 (channel volume, before tremolo)
-	tremVol int // effective volume after tremolo (used for mixing)
+	volume  int
+	tremVol int
 
-	// Vibrato
 	vibPos    int
 	vibSpd    int
 	vibDep    int
 	vibWave   uint8
-	vibRetrig bool // E4 bit 2: do not retrigger
+	vibRetrig bool
 
-	// Tremolo
 	tremPos    int
 	tremSpd    int
 	tremDep    int
 	tremWave   uint8
 	tremRetrig bool
 
-	// Arpeggio
-	arpNotes [3]uint16 // arp[0]=base period, arp[1],arp[2]=alt periods
-	arpStep  int       // 0/1/2
+	arpNotes [3]uint16
+	arpStep  int
 
-	// Mixer state
-	pos     float64 // sample position
-	posStep float64 // advance per output sample
-	pan     int     // 0=full left … 255=full right (128=centre)
+	pos     float64
+	posStep float64
+	pan     int
 	active  bool
 
-	// Volume-slide (Axy / 5xy / 6xy)
-	volSlide    int   // per-tick delta
-	volSlideMem uint8 // Axy/5xy/6xy memory
+	volSlide    int
+	volSlideMem uint8
 
-	// Fine effects (instantaneous on tick 0 only)
-	sampleOffset int // last 9xx offset memory in bytes
+	sampleOffset int
 
-	// E6: pattern loop
 	loopRow   int
 	loopCnt   int
 	loopArmed bool
 
-	// E9: retrigger
-	retrigSpd int // retrigger every N ticks (0 = off)
+	retrigSpd int
 	retrigCnt int
 
-	// EF: invert loop / funk repeat
 	invertSpeed uint8
 	invertPos   int
 	invertCnt   int
 
-	// EC: note cut, ED: note delay
-	cutTick   int // tick to silence, -1 = none
-	delayTick int // tick to play note, -1 = none
-	// saved note info for note-delay
+	cutTick     int
+	delayTick   int
 	delayPeriod uint16
 	delaySample *modSample
-	delayVolume int // -1 = no volume change
+	delayVolume int
 }
-
-// ─── Player ──────────────────────────────────────────────────────────────────
 
 // Player is a ProTracker-compatible MOD player.
 type Player struct {
@@ -193,48 +161,42 @@ type Player struct {
 
 	title       string
 	layout      modLayout
-	samples     [32]modSample // 1-indexed; samples[0] unused
+	samples     [32]modSample
 	sampleCount int
 	numChan     int
 	songLen     int
 	restart     int
 	order       [128]uint8
-	patterns    [][]uint32 // [patIdx * 64*numChan + row*numChan + chan] = packed note
+	patterns    [][]uint32
 
-	// Playback
-	pos   int // current order position
-	row   int // row within pattern (0-63)
-	speed int // ticks per row
-	bpm   int // beats per minute
+	pos   int
+	row   int
+	speed int
+	bpm   int
 
-	tick       int // current tick within row (0 = "note tick")
-	samCnt     int // samples since last tick
-	samPerTick int // samples per tick at current BPM
+	tick       int
+	samCnt     int
+	samPerTick int
 
 	channels []modChannel
 
-	// Pending jumps (set during row processing, applied afterwards)
-	nextPos     int // Bxx: jump to order position (-1 = none)
-	nextRow     int // Dxx: break to row in next pattern (-1 = none)
+	nextPos     int
+	nextRow     int
 	nextRowSame bool
-	patDelayCnt int // EEx pattern delay counter
+	patDelayCnt int
 
-	// Repeat detection
 	orderMap  [4]uint32
 	repeating bool
 
-	// Approximate Amiga LED filter (E0x)
 	filterEnabled bool
 	filterL       int32
 	filterR       int32
 
-	// 0 = mono/centered, 255 = classic hard stereo.
 	stereoSeparation int32
 
 	initialised bool
 }
 
-// Compile-time interface check.
 var _ formats.PCMTracker = (*Player)(nil)
 
 // SetStereoSeparation controls MOD channel stereo spread.
@@ -263,12 +225,11 @@ func (p *Player) Init(tune []byte, sampleRate int) string {
 	p.initialised = false
 	p.data = tune
 	if p.stereoSeparation == 0 {
-		// Default to mono unless the caller explicitly requests stereo.
 		p.stereoSeparation = 0
 	}
 
-	if err := Validate(tune); err != "" {
-		return err
+	if err := Validate(tune); err != nil {
+		return err.Error()
 	}
 	layout, ok := detectLayout(tune)
 	if !ok {
@@ -279,12 +240,10 @@ func (p *Player) Init(tune []byte, sampleRate int) string {
 
 	p.sampleRate = sampleRate
 
-	// Title (first 20 bytes, null-trimmed)
 	p.title = strings.TrimRight(string(tune[:20]), "\x00")
 
 	p.numChan = layout.numChannels
 
-	// Parse sample headers
 	for i := 0; i < layout.sampleCount; i++ {
 		b := 20 + i*30
 		s := &p.samples[i+1]
@@ -309,7 +268,6 @@ func (p *Player) Init(tune []byte, sampleRate int) string {
 		}
 	}
 
-	// Song length & restart
 	songLenOff := 20 + layout.sampleCount*30
 	ordersOff := songLenOff + 2
 	p.songLen = int(tune[songLenOff])
@@ -319,7 +277,6 @@ func (p *Player) Init(tune []byte, sampleRate int) string {
 	}
 	copy(p.order[:], tune[ordersOff:ordersOff+128])
 
-	// Find max pattern number
 	maxPat := 0
 	for i := 0; i < p.songLen; i++ {
 		if int(p.order[i]) > maxPat {
@@ -327,7 +284,6 @@ func (p *Player) Init(tune []byte, sampleRate int) string {
 		}
 	}
 
-	// Parse patterns
 	p.patterns = make([][]uint32, maxPat+1)
 	offset := layout.headerSize
 	for pi := 0; pi <= maxPat; pi++ {
@@ -349,7 +305,6 @@ func (p *Player) Init(tune []byte, sampleRate int) string {
 		p.patterns[pi] = pat
 	}
 
-	// Load sample data
 	for i := 1; i <= layout.sampleCount; i++ {
 		s := &p.samples[i]
 		if s.length > 0 {
@@ -364,7 +319,6 @@ func (p *Player) Init(tune []byte, sampleRate int) string {
 		}
 	}
 
-	// Amiga channel panning: classic ProTracker LRRL hard panning.
 	defaultPan := []int{0, 255, 255, 0}
 
 	p.channels = make([]modChannel, p.numChan)
@@ -385,7 +339,7 @@ func (p *Player) Init(tune []byte, sampleRate int) string {
 func (p *Player) Stop() {
 	if p.channels != nil {
 		for i := range p.channels {
-			cp := p.channels[i].pan // preserve pan
+			cp := p.channels[i].pan
 			p.channels[i] = modChannel{}
 			p.channels[i].pan = cp
 			p.channels[i].note = -1
@@ -432,7 +386,6 @@ func (p *Player) GetDescription() []byte {
 // Sample generates one interleaved stereo output sample.
 // It manages tick timing internally and returns true on repeat.
 func (p *Player) Sample(left, right *int16) bool {
-	// On tick boundary: process the row/tick
 	if p.samCnt == 0 {
 		if p.tick == 0 {
 			p.processRow()
@@ -455,7 +408,6 @@ func (p *Player) Sample(left, right *int16) bool {
 		p.samCnt = 0
 	}
 
-	// Mix all channels
 	var lAcc, rAcc int32
 	for i := range p.channels {
 		ch := &p.channels[i]
@@ -463,7 +415,6 @@ func (p *Player) Sample(left, right *int16) bool {
 			continue
 		}
 		s := ch.sample
-		// Compute position step: amigaClock / (period * sampleRate)
 		period := ch.playPeriod
 		if period == 0 {
 			period = ch.period
@@ -473,7 +424,6 @@ func (p *Player) Sample(left, right *int16) bool {
 		}
 		ch.posStep = float64(amigaClock) / (float64(period) * float64(p.sampleRate))
 
-		// Read sample with the same forward-only loop model as the XM player.
 		pos := ch.pos
 		effLen := s.length
 		if s.hasLoop() {
@@ -501,18 +451,15 @@ func (p *Player) Sample(left, right *int16) bool {
 		frac := pos - float64(i0)
 		sample := int16(float64(s0)*(1.0-frac) + float64(s1)*frac)
 
-		// Volume scale: 8-bit sample * vol/64 → roughly 14-bit range
 		vol := int32(ch.tremVol)
 		sampleScaled := int32(sample) * vol * 256 / 64
 
-		// Optional stereo separation control: 0 => centered mono, 255 => classic MOD hard panning.
 		pan := 128 + ((int32(ch.pan)-128)*p.stereoSeparation)/255
 		panR := pan
 		panL := 255 - pan
 		lAcc += sampleScaled * panL / 255
 		rAcc += sampleScaled * panR / 255
 
-		// Advance position
 		ch.pos += ch.posStep
 		floorPos := int(ch.pos)
 		if s.hasLoop() {
@@ -530,10 +477,6 @@ func (p *Player) Sample(left, right *int16) bool {
 		}
 	}
 
-	// Use a hotter tracker-style output level.
-	// The previous `numChan * 4` divisor left MOD playback far quieter than
-	// ProTracker/OpenMPT. Dividing by channel count preserves headroom while
-	// restoring a more typical playback loudness.
 	divisor := int32(p.numChan)
 	if divisor < 1 {
 		divisor = 1
@@ -562,8 +505,6 @@ func (p *Player) Sample(left, right *int16) bool {
 	return p.repeating
 }
 
-// calcSamPerTick returns samples per tick for the current BPM.
-// Formula: sampleRate * 60 / (bpm * 24)  (= sampleRate * 2.5 / bpm)
 func (p *Player) calcSamPerTick() int {
 	v := p.sampleRate * 5 / (p.bpm * 2)
 	if v < 1 {
@@ -572,9 +513,6 @@ func (p *Player) calcSamPerTick() int {
 	return v
 }
 
-// ─── Row processing ──────────────────────────────────────────────────────────
-
-// processRow handles tick 0 of a new row: trigger notes, load instruments, set effects.
 func (p *Player) processRow() {
 	if p.pos >= p.songLen {
 		return
@@ -596,7 +534,6 @@ func (p *Player) processRow() {
 		xParam := param >> 4
 		yParam := param & 0xF
 
-		// Reset per-row state
 		ch.volSlide = 0
 		ch.arpStep = 0
 		ch.arpNotes[0] = ch.period
@@ -606,7 +543,6 @@ func (p *Player) processRow() {
 		ch.delayTick = -1
 		ch.delayVolume = -1
 
-		// Load instrument (sample)
 		var inst *modSample
 		if sampleNum >= 1 && sampleNum <= 31 {
 			inst = &p.samples[sampleNum]
@@ -616,12 +552,10 @@ func (p *Player) processRow() {
 			ch.finetune = inst.finetune
 			ch.invertPos = 0
 			ch.invertCnt = 0
-			// Loading a sample sets the volume even without a note
 			ch.volume = int(inst.volume)
 			ch.tremVol = ch.volume
 		}
 
-		// Tone portamento (3xx, 5xy): set target but don't trigger note
 		if effect == 0x3 || effect == 0x5 {
 			if period != 0 {
 				ch.note = noteForPeriod(period)
@@ -636,7 +570,6 @@ func (p *Player) processRow() {
 			continue
 		}
 
-		// Vibrato + vol slide (6xy): note triggers normally, but slide memory is set now.
 		if effect == 0x6 {
 			p.setVolSlide(ch, xParam, yParam)
 		}
@@ -644,7 +577,6 @@ func (p *Player) processRow() {
 			p.setVolSlide(ch, xParam, yParam)
 		}
 
-		// Note delay (EDx): store the note for later
 		if effect == 0xE && xParam == 0xD {
 			if yParam > 0 {
 				ch.delayTick = int(yParam)
@@ -657,7 +589,6 @@ func (p *Player) processRow() {
 			}
 		}
 
-		// Trigger note
 		if period != 0 {
 			fineTune := ch.finetune
 			n := noteForPeriod(period)
@@ -682,12 +613,10 @@ func (p *Player) processRow() {
 			}
 		}
 
-		// Process effects on tick 0
 		p.applyEffect(ch, effect, param, xParam, yParam, true)
 	}
 }
 
-// processTick handles ticks 1…(speed-1): apply ongoing effects.
 func (p *Player) processTick() {
 	if p.pos >= p.songLen {
 		return
@@ -713,10 +642,9 @@ func (p *Player) processTick() {
 	}
 }
 
-// applyEffect applies a MOD effect. tick0 is true only on the note trigger tick.
 func (p *Player) applyEffect(ch *modChannel, effect, param, x, y uint8, tick0 bool) {
 	switch effect {
-	case 0x0: // Arpeggio
+	case 0x0:
 		if param == 0 {
 			ch.playPeriod = ch.period
 			break
@@ -745,7 +673,7 @@ func (p *Player) applyEffect(ch *modChannel, effect, param, x, y uint8, tick0 bo
 			ch.playPeriod = ch.arpNotes[ch.arpStep]
 		}
 
-	case 0x1: // Portamento up
+	case 0x1:
 		step := param
 		if step == 0 {
 			step = ch.portaUp
@@ -757,7 +685,7 @@ func (p *Player) applyEffect(ch *modChannel, effect, param, x, y uint8, tick0 bo
 		}
 		ch.playPeriod = ch.period
 
-	case 0x2: // Portamento down
+	case 0x2:
 		step := param
 		if step == 0 {
 			step = ch.portaDown
@@ -769,13 +697,13 @@ func (p *Player) applyEffect(ch *modChannel, effect, param, x, y uint8, tick0 bo
 		}
 		ch.playPeriod = ch.period
 
-	case 0x3: // Tone portamento
+	case 0x3:
 		if !tick0 && ch.portDst != 0 {
 			p.doPortamento(ch)
 		}
 		ch.playPeriod = ch.period
 
-	case 0x4: // Vibrato
+	case 0x4:
 		if tick0 {
 			if x != 0 {
 				ch.vibSpd = int(x)
@@ -787,7 +715,7 @@ func (p *Player) applyEffect(ch *modChannel, effect, param, x, y uint8, tick0 bo
 			p.doVibrato(ch)
 		}
 
-	case 0x5: // Tone portamento + volume slide
+	case 0x5:
 		if !tick0 {
 			if ch.portDst != 0 {
 				p.doPortamento(ch)
@@ -796,13 +724,13 @@ func (p *Player) applyEffect(ch *modChannel, effect, param, x, y uint8, tick0 bo
 		}
 		ch.playPeriod = ch.period
 
-	case 0x6: // Vibrato + volume slide
+	case 0x6:
 		if !tick0 {
 			p.doVibrato(ch)
 			p.doVolSlide(ch)
 		}
 
-	case 0x7: // Tremolo
+	case 0x7:
 		if tick0 {
 			if x != 0 {
 				ch.tremSpd = int(x)
@@ -810,9 +738,6 @@ func (p *Player) applyEffect(ch *modChannel, effect, param, x, y uint8, tick0 bo
 			if y != 0 {
 				ch.tremDep = int(y)
 			}
-			// ProTracker-style: tick 0 updates parameters only.
-			// The channel starts from base volume and tremolo modulation
-			// applies on subsequent ticks.
 			ch.tremVol = ch.volume
 		} else {
 			delta := int(waveOutput(ch.tremWave, ch.tremPos)) * ch.tremDep / 64
@@ -820,36 +745,36 @@ func (p *Player) applyEffect(ch *modChannel, effect, param, x, y uint8, tick0 bo
 			ch.tremPos = (ch.tremPos + ch.tremSpd) & 63
 		}
 
-	case 0x8: // Set panning (0x00=left, 0x80=centre, 0xFF=right)
+	case 0x8:
 		if tick0 {
 			ch.pan = int(param)
 		}
 
-	case 0x9: // Sample offset
+	case 0x9:
 		if tick0 {
 			if param != 0 {
 				ch.sampleOffset = int(param) * 256
 			}
 		}
 
-	case 0xA: // Volume slide
+	case 0xA:
 		if !tick0 {
 			p.doVolSlide(ch)
 		}
 
-	case 0xB: // Position jump
+	case 0xB:
 		if tick0 {
 			p.nextPos = int(param)
 			p.nextRow = 0
 		}
 
-	case 0xC: // Set volume
+	case 0xC:
 		if tick0 {
 			ch.volume = clampVol(int(param))
 			ch.tremVol = ch.volume
 		}
 
-	case 0xD: // Pattern break
+	case 0xD:
 		if tick0 {
 			nr := int(x)*10 + int(y)
 			if nr >= 64 {
@@ -861,10 +786,10 @@ func (p *Player) applyEffect(ch *modChannel, effect, param, x, y uint8, tick0 bo
 			}
 		}
 
-	case 0xE: // Extended effects
+	case 0xE:
 		p.applyExtended(ch, x, y, tick0)
 
-	case 0xF: // Set speed / BPM
+	case 0xF:
 		if tick0 {
 			if param == 0 {
 				param = 1
@@ -880,42 +805,40 @@ func (p *Player) applyEffect(ch *modChannel, effect, param, x, y uint8, tick0 bo
 
 func (p *Player) applyExtended(ch *modChannel, x, y uint8, tick0 bool) {
 	switch x {
-	case 0x0: // E0x: Set filter (ignored in software)
+	case 0x0:
 		if tick0 {
 			p.filterEnabled = y == 0
 		}
 
-	case 0x1: // E1x: Fine portamento up
+	case 0x1:
 		if tick0 {
 			ch.period = clampPeriod(int(ch.period) - int(y))
 			ch.playPeriod = ch.period
 		}
 
-	case 0x2: // E2x: Fine portamento down
+	case 0x2:
 		if tick0 {
 			ch.period = clampPeriod(int(ch.period) + int(y))
 			ch.playPeriod = ch.period
 		}
 
-	case 0x3: // E3x: Glissando (snap tone-portamento to semitone)
+	case 0x3:
 		if tick0 {
 			ch.glissando = y != 0
 		}
 
-	case 0x4: // E4x: Set vibrato waveform
+	case 0x4:
 		if tick0 {
 			ch.vibWave = y & 3
 			ch.vibRetrig = (y & 4) != 0
 		}
 
-	case 0x5: // E5x: Set finetune
+	case 0x5:
 		if tick0 {
-			// Like XM trigger-time finetune handling, E5x sets finetune state for
-			// subsequent note triggers instead of forcibly retuning the active one.
 			ch.finetune = y
 		}
 
-	case 0x6: // E6x: Pattern loop
+	case 0x6:
 		if tick0 {
 			if y == 0 {
 				ch.loopRow = p.row
@@ -935,18 +858,18 @@ func (p *Player) applyExtended(ch *modChannel, x, y uint8, tick0 bool) {
 			}
 		}
 
-	case 0x7: // E7x: Set tremolo waveform
+	case 0x7:
 		if tick0 {
 			ch.tremWave = y & 3
 			ch.tremRetrig = (y & 4) != 0
 		}
 
-	case 0x8: // E8x: Set panning (coarse: 0=left, 8=centre, 15=right)
+	case 0x8:
 		if tick0 {
 			ch.pan = int(y) * 17
 		}
 
-	case 0x9: // E9x: Retrigger note every y ticks
+	case 0x9:
 		if tick0 {
 			ch.retrigSpd = int(y)
 			ch.retrigCnt = 0
@@ -959,19 +882,19 @@ func (p *Player) applyExtended(ch *modChannel, x, y uint8, tick0 bool) {
 			}
 		}
 
-	case 0xA: // EAx: Fine volume slide up
+	case 0xA:
 		if tick0 {
 			ch.volume = clampVol(ch.volume + int(y))
 			ch.tremVol = ch.volume
 		}
 
-	case 0xB: // EBx: Fine volume slide down
+	case 0xB:
 		if tick0 {
 			ch.volume = clampVol(ch.volume - int(y))
 			ch.tremVol = ch.volume
 		}
 
-	case 0xC: // ECx: Note cut at tick y
+	case 0xC:
 		if tick0 {
 			ch.cutTick = int(y)
 			if y == 0 {
@@ -983,7 +906,7 @@ func (p *Player) applyExtended(ch *modChannel, x, y uint8, tick0 bool) {
 			ch.tremVol = 0
 		}
 
-	case 0xD: // EDx: Note delay — handled in processRow
+	case 0xD:
 		if !tick0 && ch.delayTick >= 0 && p.tick == ch.delayTick {
 			if ch.delaySample != nil {
 				ch.sample = ch.delaySample
@@ -997,14 +920,14 @@ func (p *Player) applyExtended(ch *modChannel, x, y uint8, tick0 bool) {
 			}
 		}
 
-	case 0xE: // EEx: Pattern delay (extra rows)
+	case 0xE:
 		if tick0 {
 			if p.patDelayCnt == 0 {
 				p.patDelayCnt = int(y)
 			}
 		}
 
-	case 0xF: // EFx: Invert loop (ignored)
+	case 0xF:
 		if tick0 {
 			ch.invertSpeed = y & 0x0F
 			if ch.invertSpeed == 0 {
@@ -1015,7 +938,6 @@ func (p *Player) applyExtended(ch *modChannel, x, y uint8, tick0 bool) {
 	}
 }
 
-// setVolSlide decodes Axy volume-slide params and stores the per-tick delta.
 func (p *Player) setVolSlide(ch *modChannel, x, y uint8) {
 	param := (x << 4) | y
 	if param != 0 {
@@ -1082,7 +1004,6 @@ func (p *Player) updateInvertLoop(ch *modChannel) {
 	}
 }
 
-// advanceRow moves to the next row, handling pattern breaks, position jumps, and repeats.
 func (p *Player) advanceRow() {
 	newPos := p.pos
 	newRow := p.row + 1
@@ -1118,7 +1039,6 @@ func (p *Player) advanceRow() {
 		p.repeating = true
 	}
 
-	// Detect repeat by tracking order positions visited
 	if !p.repeating && newRow == 0 {
 		byteIdx := newPos >> 5
 		bit := uint32(1) << (uint(newPos) & 31)

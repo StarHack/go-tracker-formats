@@ -1,12 +1,9 @@
-// player.go - S3M player.
-// Implements formats.PCMTracker.
-// Supports core Scream Tracker 3 sample playback and common effects.
 package s3m
 
 import (
 	"encoding/binary"
-	"math"
 	"github.com/StarHack/go-tracker-formats/formats"
+	"math"
 	"strings"
 )
 
@@ -18,20 +15,20 @@ type s3mSample struct {
 	looped    bool
 	c2spd     int
 	volume    int
-	data      []int16 // normalized to signed 16-bit
+	data      []int16
 }
 
 type s3mEvent struct {
-	note   uint8 // 0..119, 254=cut, 255=none
-	inst   uint8
-	vol    uint8 // 0..64 or 255 none
-	eff    uint8 // raw S3M command 1..26, 0 none
-	param  uint8
+	note  uint8
+	inst  uint8
+	vol   uint8
+	eff   uint8
+	param uint8
 }
 
 type s3mPattern struct {
 	rows   int
-	events []s3mEvent // rows * channels
+	events []s3mEvent
 }
 
 type s3mChannel struct {
@@ -41,7 +38,7 @@ type s3mChannel struct {
 
 	volume  int
 	mixVol  int
-	pan     int // 0..255
+	pan     int
 	globalP int
 
 	pos     float64
@@ -73,7 +70,7 @@ type Player struct {
 	title string
 	l     layout
 
-	samples  []s3mSample // 1-indexed (sample 0 unused)
+	samples  []s3mSample
 	patterns []s3mPattern
 
 	pos   int
@@ -119,7 +116,6 @@ func clamp16(v int64) int16 {
 }
 
 func s3mNoteToFreq(note int, c2spd int) float64 {
-	// note: 48 == C-4 in S3M-ish semantics
 	return float64(c2spd) * math.Pow(2.0, float64(note-48)/12.0)
 }
 
@@ -308,8 +304,8 @@ func decodePattern(data []byte, para uint16, numCh int, chMap [32]int) (s3mPatte
 func (p *Player) Init(tune []byte, sampleRate int) string {
 	p.initialised = false
 	p.data = tune
-	if err := Validate(tune); err != "" {
-		return err
+	if err := Validate(tune); err != nil {
+		return err.Error()
 	}
 	l, ok := detectLayout(tune)
 	if !ok {
@@ -343,7 +339,6 @@ func (p *Player) Init(tune []byte, sampleRate int) string {
 		if logical < 0 {
 			continue
 		}
-		// ST3 default channel panning: 0..7 left, 8..15 right.
 		pan := 32
 		if phys >= 8 {
 			pan = 224
@@ -419,7 +414,7 @@ func (p *Player) trigger(ch *s3mChannel, ev s3mEvent, tick0 bool) {
 	ch.baseFreq = s3mNoteToFreq(n, ch.sample.c2spd)
 	ch.playFreq = ch.baseFreq
 	ch.target = ch.baseFreq
-	if tick0 && ev.eff == 15 { // Oxx sample offset
+	if tick0 && ev.eff == 15 {
 		if ev.param != 0 {
 			ch.offMem = ev.param
 		}
@@ -451,16 +446,16 @@ func (p *Player) applyEffect(ch *s3mChannel, ev s3mEvent, tick0 bool) {
 	x := ev.param >> 4
 	y := ev.param & 0x0F
 	switch e {
-	case 1: // Axx speed
+	case 1:
 		if tick0 && ev.param > 0 {
 			p.speed = int(ev.param)
 		}
-	case 2: // Bxx jump
+	case 2:
 		if tick0 {
 			p.nextPos = int(ev.param)
 			p.nextRow = 0
 		}
-	case 3: // Cxx break (BCD)
+	case 3:
 		if tick0 {
 			r := int(x)*10 + int(y)
 			if r > 63 {
@@ -468,11 +463,11 @@ func (p *Player) applyEffect(ch *s3mChannel, ev s3mEvent, tick0 bool) {
 			}
 			p.nextRow = r
 		}
-	case 4: // Dxy vol slide
+	case 4:
 		if !tick0 {
 			p.doVolSlide(ch, ev.param)
 		}
-	case 5: // Exx porta down
+	case 5:
 		if ev.param != 0 {
 			ch.portDownMem = ev.param
 		}
@@ -480,7 +475,7 @@ func (p *Player) applyEffect(ch *s3mChannel, ev s3mEvent, tick0 bool) {
 			ch.baseFreq /= math.Pow(2.0, float64(ch.portDownMem)/768.0)
 			ch.playFreq = ch.baseFreq
 		}
-	case 6: // Fxx porta up
+	case 6:
 		if ev.param != 0 {
 			ch.portUpMem = ev.param
 		}
@@ -488,7 +483,7 @@ func (p *Player) applyEffect(ch *s3mChannel, ev s3mEvent, tick0 bool) {
 			ch.baseFreq *= math.Pow(2.0, float64(ch.portUpMem)/768.0)
 			ch.playFreq = ch.baseFreq
 		}
-	case 7: // Gxx tone porta
+	case 7:
 		if ev.param != 0 {
 			ch.toneMem = ev.param
 		}
@@ -507,7 +502,7 @@ func (p *Player) applyEffect(ch *s3mChannel, ev s3mEvent, tick0 bool) {
 			}
 			ch.playFreq = ch.baseFreq
 		}
-	case 8: // Hxy vibrato
+	case 8:
 		if tick0 {
 			if x != 0 {
 				ch.vibSpd = x
@@ -520,7 +515,7 @@ func (p *Player) applyEffect(ch *s3mChannel, ev s3mEvent, tick0 bool) {
 			ch.playFreq = ch.baseFreq * math.Pow(2.0, delta/12.0)
 			ch.vibPos = (ch.vibPos + int(ch.vibSpd)) & 63
 		}
-	case 10: // Jxy arpeggio
+	case 10:
 		if ev.param != 0 && !tick0 {
 			switch p.tick % 3 {
 			case 1:
@@ -531,21 +526,21 @@ func (p *Player) applyEffect(ch *s3mChannel, ev s3mEvent, tick0 bool) {
 				ch.playFreq = ch.baseFreq
 			}
 		}
-	case 11: // Kxy vib + vol
+	case 11:
 		if !tick0 {
 			p.applyEffect(ch, s3mEvent{eff: 8, param: ev.param}, false)
 			p.doVolSlide(ch, ev.param)
 		}
-	case 12: // Lxy tone + vol
+	case 12:
 		if !tick0 {
 			p.applyEffect(ch, s3mEvent{eff: 7, param: ev.param}, false)
 			p.doVolSlide(ch, ev.param)
 		}
-	case 15: // Oxx sample offset memory
+	case 15:
 		if tick0 && ev.param != 0 {
 			ch.offMem = ev.param
 		}
-	case 17: // Qxy retrig
+	case 17:
 		if tick0 {
 			if ev.param != 0 {
 				ch.retrigMem = ev.param
@@ -561,13 +556,13 @@ func (p *Player) applyEffect(ch *s3mChannel, ev s3mEvent, tick0 bool) {
 				}
 			}
 		}
-	case 19: // Sxx
+	case 19:
 		switch x {
-		case 8: // S8x pan
+		case 8:
 			if tick0 {
 				ch.pan = int(y) * 17
 			}
-		case 12: // SCx note cut
+		case 12:
 			if tick0 {
 				ch.cutTick = int(y)
 				if y == 0 {
@@ -578,7 +573,7 @@ func (p *Player) applyEffect(ch *s3mChannel, ev s3mEvent, tick0 bool) {
 				ch.volume = 0
 				ch.mixVol = 0
 			}
-		case 13: // SDx note delay
+		case 13:
 			if tick0 {
 				ch.delayTick = int(y)
 			} else if ch.delayTick >= 0 && p.tick == ch.delayTick {
@@ -586,12 +581,12 @@ func (p *Player) applyEffect(ch *s3mChannel, ev s3mEvent, tick0 bool) {
 				ch.active = ch.sample != nil
 			}
 		}
-	case 20: // Txx tempo
+	case 20:
 		if tick0 && ev.param >= 32 {
 			p.tempo = int(ev.param)
 			p.samPerTick = p.calcSamPerTick()
 		}
-	case 22: // Vxx global vol
+	case 22:
 		if tick0 {
 			p.globalVol = clampInt(int(ev.param), 0, 64)
 		}
@@ -633,7 +628,6 @@ func (p *Player) processRow() {
 			ch.volume = int(ev.vol)
 			ch.mixVol = ch.volume
 		}
-		// Tone porta keeps running sample; note sets target only.
 		if ev.eff == 7 && ev.note != 255 && ev.note != 254 && ch.sample != nil {
 			ch.target = s3mNoteToFreq(int(ev.note), ch.sample.c2spd)
 		} else {
@@ -752,7 +746,7 @@ func (p *Player) Sample(left, right *int16) bool {
 
 		g := (float64(ch.mixVol) / 64.0) * (float64(p.globalVol) / 64.0)
 		smp *= g
-		pan := 128 + (ch.pan-128)/2 // soften hard pan
+		pan := 128 + (ch.pan-128)/2
 		if pan < 0 {
 			pan = 0
 		}

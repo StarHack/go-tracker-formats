@@ -1,6 +1,3 @@
-// validate.go - MOD file validator.
-// Supports classic 15-sample Soundtracker/NoiseTracker MODs and tagged
-// ProTracker-compatible 31-sample variants (M.K., M!K!, FLT4/8, xCHN, xxCH).
 package mod
 
 import "fmt"
@@ -12,24 +9,63 @@ type modLayout struct {
 	formatName  string
 }
 
-// numChannelsFromTag returns the channel count for a known MOD tag, or 0.
-func numChannelsFromTag(tag [4]byte) int {
-	s := string(tag[:])
-	switch s {
-	case "M.K.", "M!K!", "FLT4", "OCTA":
-		return 4
-	case "FLT8", "CD81":
-		return 8
+// Validate checks a MOD file for basic validity.
+// Returns nil if valid, or an error.
+func Validate(data []byte) error {
+	layout, ok := detectLayout(data)
+	if !ok {
+		if len(data) < 600 {
+			return fmt.Errorf("not a MOD file: too short")
+		}
+		if len(data) >= 1084 {
+			var tag [4]byte
+			copy(tag[:], data[1080:1084])
+			return fmt.Errorf("not a recognised MOD format tag: %q", string(tag[:]))
+		}
+		return fmt.Errorf("not a recognised MOD file")
 	}
-	// xCHN: e.g. "4CHN","6CHN","8CHN"
-	if tag[1] == 'C' && tag[2] == 'H' && tag[3] == 'N' && tag[0] >= '1' && tag[0] <= '9' {
-		return int(tag[0] - '0')
+	return validateWithLayout(data, layout)
+}
+
+func validateWithLayout(data []byte, layout modLayout) error {
+	songLenOff := 20 + layout.sampleCount*30
+	ordersOff := songLenOff + 2
+
+	if len(data) < layout.headerSize {
+		return fmt.Errorf("not a MOD file: too short")
 	}
-	// xxCH: e.g. "10CH","12CH"…"32CH"
-	if tag[2] == 'C' && tag[3] == 'H' && tag[0] >= '0' && tag[0] <= '9' && tag[1] >= '0' && tag[1] <= '9' {
-		return int(tag[0]-'0')*10 + int(tag[1]-'0')
+
+	songLen := int(data[songLenOff])
+	if songLen == 0 || songLen > 128 {
+		return fmt.Errorf("MOD song length is invalid")
 	}
-	return 0
+
+	maxPat := 0
+	for i := 0; i < songLen; i++ {
+		p := int(data[ordersOff+i])
+		if p > maxPat {
+			maxPat = p
+		}
+	}
+
+	patternBytes := (maxPat + 1) * 64 * layout.numChannels * 4
+	if len(data) < layout.headerSize+patternBytes {
+		return fmt.Errorf("MOD file is truncated (pattern data missing)")
+	}
+
+	offset := layout.headerSize + patternBytes
+	for i := 0; i < layout.sampleCount; i++ {
+		base := 20 + i*30
+		if data[base+25] > 64 {
+			return fmt.Errorf("MOD sample %d has invalid volume", i+1)
+		}
+		byteLen := (int(data[base+22])<<8 | int(data[base+23])) * 2
+		if len(data) < offset+byteLen {
+			return fmt.Errorf("MOD file is truncated (sample %d data missing)", i+1)
+		}
+		offset += byteLen
+	}
+	return nil
 }
 
 func detectLayout(data []byte) (modLayout, bool) {
@@ -96,61 +132,19 @@ func looksLike15SampleMOD(data []byte) bool {
 	return true
 }
 
-func validateWithLayout(data []byte, layout modLayout) string {
-	songLenOff := 20 + layout.sampleCount*30
-	ordersOff := songLenOff + 2
-
-	if len(data) < layout.headerSize {
-		return "Not a MOD file: too short."
+func numChannelsFromTag(tag [4]byte) int {
+	s := string(tag[:])
+	switch s {
+	case "M.K.", "M!K!", "FLT4", "OCTA":
+		return 4
+	case "FLT8", "CD81":
+		return 8
 	}
-
-	songLen := int(data[songLenOff])
-	if songLen == 0 || songLen > 128 {
-		return "MOD song length is invalid."
+	if tag[1] == 'C' && tag[2] == 'H' && tag[3] == 'N' && tag[0] >= '1' && tag[0] <= '9' {
+		return int(tag[0] - '0')
 	}
-
-	maxPat := 0
-	for i := 0; i < songLen; i++ {
-		p := int(data[ordersOff+i])
-		if p > maxPat {
-			maxPat = p
-		}
+	if tag[2] == 'C' && tag[3] == 'H' && tag[0] >= '0' && tag[0] <= '9' && tag[1] >= '0' && tag[1] <= '9' {
+		return int(tag[0]-'0')*10 + int(tag[1]-'0')
 	}
-
-	patternBytes := (maxPat + 1) * 64 * layout.numChannels * 4
-	if len(data) < layout.headerSize+patternBytes {
-		return "MOD file is truncated (pattern data missing)."
-	}
-
-	offset := layout.headerSize + patternBytes
-	for i := 0; i < layout.sampleCount; i++ {
-		base := 20 + i*30
-		if data[base+25] > 64 {
-			return fmt.Sprintf("MOD sample %d has invalid volume.", i+1)
-		}
-		byteLen := (int(data[base+22])<<8 | int(data[base+23])) * 2
-		if len(data) < offset+byteLen {
-			return fmt.Sprintf("MOD file is truncated (sample %d data missing).", i+1)
-		}
-		offset += byteLen
-	}
-	return ""
-}
-
-// Validate checks a MOD file for basic validity.
-// Returns "" if valid, or an error message.
-func Validate(data []byte) string {
-	layout, ok := detectLayout(data)
-	if !ok {
-		if len(data) < 600 {
-			return "Not a MOD file: too short."
-		}
-		if len(data) >= 1084 {
-			var tag [4]byte
-			copy(tag[:], data[1080:1084])
-			return fmt.Sprintf("Not a recognised MOD format tag: %q.", string(tag[:]))
-		}
-		return "Not a recognised MOD file."
-	}
-	return validateWithLayout(data, layout)
+	return 0
 }

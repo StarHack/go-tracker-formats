@@ -1,11 +1,9 @@
-// player.go - FastTracker 2 XM player.
-// Implements formats.PCMTracker.
 package xm
 
 import (
 	"encoding/binary"
-	"math"
 	"github.com/StarHack/go-tracker-formats/formats"
+	"math"
 	"strings"
 )
 
@@ -80,8 +78,8 @@ type xmChannel struct {
 	basePitch   float64
 	playPitch   float64
 	targetPitch float64
-	samplePos  float64
-	baseVolume int
+	samplePos   float64
+	baseVolume  int
 	volume      int
 	pan         int
 	fadeoutVol  int
@@ -167,7 +165,7 @@ func evalWaveform(waveform uint8, step int) int {
 	s := uint8(step)
 	waveform &= 127
 	switch waveform {
-	case 0: // Sine (LUT-based, matching libxm)
+	case 0:
 		q := s >> 2
 		var idx uint8
 		if q&0x10 != 0 {
@@ -179,9 +177,9 @@ func evalWaveform(waveform uint8, step int) int {
 			return -sinLUT[idx]
 		}
 		return sinLUT[idx]
-	case 1: // Ramp down
+	case 1:
 		return int(int8(^s))
-	case 2: // Square
+	case 2:
 		if s < 0x80 {
 			return -128
 		}
@@ -212,8 +210,6 @@ func envelopeValue(env xmEnvelope, pos int) int {
 	return env.points[len(env.points)-1].value
 }
 
-// tickEnvelope matches libxm's xm_tick_envelope: loop-check, sustain-check,
-// then read+advance. Returns the envelope value (0..64 for volume, 0..64 for panning).
 func tickEnvelope(env xmEnvelope, pos *int, keyOn bool) int {
 	if !env.enabled || len(env.points) < 2 {
 		return envelopeValue(env, *pos)
@@ -239,7 +235,6 @@ func tickEnvelope(env xmEnvelope, pos *int, keyOn bool) int {
 }
 
 func pitchToStep(pitch float64, sampleRate int) float64 {
-	// Reference: C-4 (noteIdx 48, 0-based) = 8363 Hz (FT2 / libxm standard)
 	freq := 8363.0 * math.Pow(2.0, (pitch-48.0)/12.0)
 	return freq / float64(sampleRate)
 }
@@ -374,7 +369,7 @@ func parseInstruments(data []byte, offset int, count int) ([]xmInstrument, strin
 			loopLen := int(binary.LittleEndian.Uint32(data[sh+8:]))
 			volume := int(data[sh+12])
 			rawFinetune := int8(data[sh+13])
-		finetune := int8((int(rawFinetune) + 128) / 8 - 16)
+			finetune := int8((int(rawFinetune)+128)/8 - 16)
 			typ := data[sh+14]
 			pan := int(data[sh+15])
 			rel := int8(data[sh+16])
@@ -418,8 +413,8 @@ func parseInstruments(data []byte, offset int, count int) ([]xmInstrument, strin
 func (p *Player) Init(tune []byte, sampleRate int) string {
 	p.initialised = false
 	p.data = tune
-	if err := Validate(tune); err != "" {
-		return err
+	if err := Validate(tune); err != nil {
+		return err.Error()
 	}
 	layout, ok := detectHeader(tune)
 	if !ok {
@@ -597,8 +592,6 @@ func (p *Player) Sample(left, right *int16) bool {
 		}
 		lVol := math.Sqrt(float64(256-pan) / 256.0)
 		rVol := math.Sqrt(float64(pan) / 256.0)
-		// AMPLIFICATION = 0.25 (matches libxm), also normalize 8-bit-shifted
-		// samples from int16 range to float: divide by 32768
 		scaledF := mix * volMul * 0.25 / 32768.0
 		lAcc += int64(scaledF * lVol * 32767.0)
 		rAcc += int64(scaledF * rVol * 32767.0)
@@ -621,7 +614,6 @@ func (p *Player) Sample(left, right *int16) bool {
 	}
 	return p.repeating
 }
-
 
 func clamp32(v int64) int32 {
 	if v > 32767 {
@@ -1032,7 +1024,7 @@ func (p *Player) applyEffect(ch *xmChannel, ev xmEvent, tick0 bool, onlySetup bo
 		if tick0 {
 			p.globalVol = clampInt(int(ev.param), 0, 64)
 		}
-	case 0x11: // H - Global volume slide
+	case 0x11:
 		if ev.param != 0 {
 			ch.globVolMem = int(ev.param)
 		}
@@ -1044,22 +1036,22 @@ func (p *Player) applyEffect(ch *xmChannel, ev xmEvent, tick0 bool, onlySetup bo
 				p.globalVol = clampInt(p.globalVol-int(param&0x0F), 0, 64)
 			}
 		}
-	case 0x14: // K - Key off at tick y
+	case 0x14:
 		if !tick0 {
 			if p.tick == int(ev.param) {
 				p.keyOff(ch)
 			}
 		}
-	case 0x15: // L - Set envelope position
+	case 0x15:
 		if tick0 {
 			ch.volEnvPos = int(ev.param)
 			ch.panEnvPos = int(ev.param)
 		}
-	case 0x19: // P - Panning slide
+	case 0x19:
 		if !tick0 {
 			p.doPanSlide(ch, ev.param)
 		}
-	case 0x1B: // R - Multi retrig note
+	case 0x1B:
 		if tick0 {
 			rp := ev.param
 			if rp&0x0F != 0 {
@@ -1070,7 +1062,7 @@ func (p *Player) applyEffect(ch *xmChannel, ev xmEvent, tick0 bool, onlySetup bo
 			}
 		}
 		p.doMultiRetrig(ch, ch.retrigParam)
-	case 0x1D: // T - Tremor
+	case 0x1D:
 		if ev.param > 0 {
 			ch.tremorParam = ev.param
 		}
@@ -1092,7 +1084,7 @@ func (p *Player) applyEffect(ch *xmChannel, ev xmEvent, tick0 bool, onlySetup bo
 				ch.volume = ch.baseVolume
 			}
 		}
-	case 0x21: // X - Extra fine portamento
+	case 0x21:
 		if x == 1 && tick0 {
 			ch.basePitch += float64(y) / 64.0
 			ch.playPitch = ch.basePitch
@@ -1109,22 +1101,22 @@ func (p *Player) applyEffect(ch *xmChannel, ev xmEvent, tick0 bool, onlySetup bo
 
 func (p *Player) applyExtended(ch *xmChannel, x, y uint8, tick0 bool) {
 	switch x {
-	case 0x1: // E1y - Fine portamento up
+	case 0x1:
 		if tick0 {
 			ch.basePitch += float64(y) / 16.0
 			ch.playPitch = ch.basePitch
 		}
-	case 0x2: // E2y - Fine portamento down
+	case 0x2:
 		if tick0 {
 			ch.basePitch -= float64(y) / 16.0
 			ch.playPitch = ch.basePitch
 		}
-	case 0x4: // E4y - Set vibrato waveform
+	case 0x4:
 		if tick0 {
 			ch.vibratoWave = y
 		}
-	case 0x5: // E5y - Set finetune (handled inside triggerNote)
-	case 0x7: // E7y - Set tremolo waveform
+	case 0x5:
+	case 0x7:
 		if tick0 {
 			ch.tremoloWave = y
 		}
@@ -1143,7 +1135,7 @@ func (p *Player) applyExtended(ch *xmChannel, x, y uint8, tick0 bool) {
 				}
 			}
 		}
-	case 0x9: // E9y - Retrigger note (only on non-zero ticks, matching libxm)
+	case 0x9:
 		if !tick0 && y > 0 && p.tick%int(y) == 0 {
 			p.triggerInstrument(ch)
 			if ch.inst != nil && ch.note > 0 {
@@ -1160,7 +1152,7 @@ func (p *Player) applyExtended(ch *xmChannel, x, y uint8, tick0 bool) {
 			ch.baseVolume = clampInt(ch.baseVolume-int(y), 0, 64)
 			ch.volume = ch.baseVolume
 		}
-	case 0xC: // ECy - Note cut (only fires on non-zero ticks in libxm)
+	case 0xC:
 		if !tick0 && p.tick == int(y) {
 			ch.volume = 0
 		}
@@ -1209,7 +1201,6 @@ func (p *Player) doVolSlide(ch *xmChannel, param uint8) {
 	}
 	x := int(param >> 4)
 	y := int(param & 0x0F)
-	// libxm: up-slide has precedence (matches FT2 behaviour for e.g. A1F)
 	if x > 0 {
 		ch.baseVolume = clampInt(ch.baseVolume+x, 0, 64)
 	} else if y > 0 {

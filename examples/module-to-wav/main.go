@@ -1,9 +1,3 @@
-// main.go - rad2wav: convert RAD, MOD, and XM tune files to WAV audio.
-// Pure Go, no CGO.
-//
-// Usage:
-//
-//	rad2wav input.{rad,mod,s3m,xm} [-o output.wav] [-rate 44100]
 package main
 
 import (
@@ -29,7 +23,7 @@ func main() {
 	outFlag := flag.String("o", "", "output WAV file (default: input basename + .wav)")
 	rateFlag := flag.Int("rate", defaultSampleRate, "output sample rate in Hz")
 	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: rad2wav [options] input.{rad,mod,s3m,xm}\n\nOptions:\n")
+		fmt.Fprintf(os.Stderr, "Usage: module-to-wav [options] input.{rad,mod,s3m,xm}\n\nOptions:\n")
 		flag.PrintDefaults()
 	}
 	flag.Parse()
@@ -79,10 +73,7 @@ func main() {
 	fmt.Printf("Written: %s\n", outFile)
 }
 
-// detect returns either a formats.Tracker (OPL) or formats.PCMTracker (PCM),
-// or an error string.
 func detect(tune []byte) (interface{}, string) {
-	// RAD v1 / v2
 	if len(tune) >= 17 {
 		hdr := "RAD by REALiTY!!"
 		match := true
@@ -95,13 +86,13 @@ func detect(tune []byte) (interface{}, string) {
 		if match {
 			switch tune[0x10] {
 			case 0x10:
-				if e := radv1.Validate(tune); e != "" {
-					return nil, e
+				if e := radv1.Validate(tune); e != nil {
+					return nil, e.Error()
 				}
 				return &radv1.Player{}, ""
 			case 0x21:
-				if e := radv2.Validate(tune); e != "" {
-					return nil, e
+				if e := radv2.Validate(tune); e != nil {
+					return nil, e.Error()
 				}
 				return &radv2.Player{}, ""
 			default:
@@ -109,22 +100,18 @@ func detect(tune []byte) (interface{}, string) {
 			}
 		}
 	}
-	// XM
-	if e := xm.Validate(tune); e == "" {
+	if e := xm.Validate(tune); e == nil {
 		return &xm.Player{}, ""
 	}
-	// S3M
-	if e := s3m.Validate(tune); e == "" {
+	if e := s3m.Validate(tune); e == nil {
 		return &s3m.Player{}, ""
 	}
-	// MOD
-	if e := mod.Validate(tune); e == "" {
+	if e := mod.Validate(tune); e == nil {
 		return &mod.Player{}, ""
 	}
 	return nil, "Unrecognised file format (not RAD v1/v2, XM, S3M, or MOD)."
 }
 
-// renderToSamples dispatches to the appropriate render path.
 func renderToSamples(tune []byte, sampleRate int, tracker interface{}) []int16 {
 	switch t := tracker.(type) {
 	case formats.Tracker:
@@ -135,7 +122,6 @@ func renderToSamples(tune []byte, sampleRate int, tracker interface{}) []int16 {
 	return nil
 }
 
-// renderOPL renders an OPL-based Tracker (RAD v1/v2) to samples.
 func renderOPL(tune []byte, sampleRate int, player formats.Tracker) []int16 {
 	adlib := opal.New(sampleRate)
 	if e := player.Init(tune, adlib.Port); e != "" {
@@ -165,7 +151,6 @@ func renderOPL(tune []byte, sampleRate int, player formats.Tracker) []int16 {
 	return out
 }
 
-// renderPCM renders a PCMTracker (MOD etc.) to samples.
 func renderPCM(tune []byte, sampleRate int, player formats.PCMTracker) []int16 {
 	if e := player.Init(tune, sampleRate); e != "" {
 		fmt.Fprintf(os.Stderr, "Error: player init failed: %s\n", e)
@@ -182,7 +167,6 @@ func renderPCM(tune []byte, sampleRate int, player formats.PCMTracker) []int16 {
 	return out
 }
 
-// writeWAV writes interleaved stereo int16 PCM to a WAV file.
 func writeWAV(path string, samples []int16, sampleRate int) error {
 	f, err := os.Create(path)
 	if err != nil {
@@ -216,7 +200,6 @@ func writeWAV(path string, samples []int16, sampleRate int) error {
 	return nil
 }
 
-// printInfo prints the format name and description/title.
 func printInfo(tracker interface{}) {
 	var desc []byte
 	var label string
@@ -250,7 +233,6 @@ func printInfo(tracker interface{}) {
 	fmt.Println()
 }
 
-// printRADDescription decodes RAD's run-length-encoded description format.
 func printRADDescription(desc []byte) {
 	s := desc
 	var line []byte

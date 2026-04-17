@@ -1,9 +1,6 @@
-// player.go - RAD v2.1 player (OPL3, 9 channels, up to 4-op, riffs).
-// Pure Go port of the RAD v2.1 replayer by Shayde/Reality (public domain).
 package radv2
 
 import "github.com/StarHack/go-tracker-formats/formats"
-
 
 const (
 	kTracks      = 100
@@ -71,13 +68,13 @@ var radOpOffsets2 = [9][2]uint16{
 }
 
 var radAlgCarriers = [7][4]bool{
-	{true, false, false, false}, // 0 - 2op FM
-	{true, true, false, false},  // 1 - 2op additive
-	{true, false, false, false}, // 2 - 4op FM chain
-	{true, false, false, true},  // 3 - 4op FM+add
-	{true, false, true, false},  // 4 - 4op
-	{true, false, true, true},   // 5 - 4op
-	{true, true, true, true},    // 6 - 4op all additive
+	{true, false, false, false},
+	{true, true, false, false},
+	{true, false, false, false},
+	{true, false, false, true},
+	{true, false, true, false},
+	{true, false, true, true},
+	{true, true, true, true},
 }
 
 type radInstrument struct {
@@ -130,8 +127,8 @@ type radChannel struct {
 type Player struct {
 	opl3          func(uint16, uint8)
 	tune          []byte
-	version       int  // 1 = v1, 2 = v2
-	useOPL3       bool // true for v2
+	version       int
+	useOPL3       bool
 	instruments   [kInstruments]radInstrument
 	channels      [kChannels]radChannel
 	playTime      uint32
@@ -153,7 +150,6 @@ type Player struct {
 	lineJump      int8
 	opl3Regs      [512]uint8
 
-	// exported by unpackNote
 	noteNum   int8
 	octaveNum int8
 	instNum   uint8
@@ -162,7 +158,6 @@ type Player struct {
 	lastNote  bool
 }
 
-// compile-time interface check
 var _ formats.Tracker = (*Player)(nil)
 
 // GetDescription returns the raw embedded description bytes from the tune.
@@ -188,7 +183,6 @@ func (p *Player) GetDescription() []byte {
 	return desc
 }
 
-
 // Init initialises the player for a tune.  opl3Fn is called for every OPL3
 // register write.
 func (p *Player) Init(tune []byte, opl3Fn func(uint16, uint8)) string {
@@ -199,7 +193,7 @@ func (p *Player) Init(tune []byte, opl3Fn func(uint16, uint8)) string {
 		p.hertz = -1
 		return "Not a RAD v1 or v2.1 tune."
 	}
-	p.version = int(tune[0x10] >> 4) // 1 for v1, 2 for v2
+	p.version = int(tune[0x10] >> 4)
 	p.useOPL3 = p.version >= 2
 
 	p.opl3 = opl3Fn
@@ -229,7 +223,6 @@ func (p *Player) Init(tune []byte, opl3Fn func(uint16, uint8)) string {
 		p.hertz = 18
 	}
 
-	// Skip description (null-terminated): v2 always, v1 only when flags bit 7 set
 	if p.version >= 2 || flags&0x80 != 0 {
 		for s[0] != 0 {
 			s = s[1:]
@@ -237,7 +230,6 @@ func (p *Player) Init(tune []byte, opl3Fn func(uint16, uint8)) string {
 		s = s[1:]
 	}
 
-	// Parse instruments
 	for i := range p.instruments {
 		p.instruments[i] = radInstrument{}
 	}
@@ -251,7 +243,6 @@ func (p *Player) Init(tune []byte, opl3Fn func(uint16, uint8)) string {
 		inst := &p.instruments[instNum-1]
 
 		if p.version >= 2 {
-			// v2 instrument
 			nameLen := int(s[0])
 			s = s[1+nameLen:]
 
@@ -282,11 +273,9 @@ func (p *Player) Init(tune []byte, opl3Fn func(uint16, uint8)) string {
 					}
 				}
 			} else {
-				// MIDI instrument: skip 6 bytes
 				s = s[6:]
 			}
 
-			// Instrument riff?
 			if alg&0x80 != 0 {
 				size := int(s[0]) | (int(s[1]) << 8)
 				s = s[2:]
@@ -296,10 +285,6 @@ func (p *Player) Init(tune []byte, opl3Fn func(uint16, uint8)) string {
 				inst.riff = nil
 			}
 		} else {
-			// v1 instrument: 11 bytes
-			// Byte layout: mod_avekm, car_avekm, mod_ksltl, car_ksltl,
-			//              mod_ardr, car_ardr, mod_slrr, car_slrr,
-			//              fb_conn, mod_wave, car_wave
 			inst.algorithm = s[8] & 1
 			inst.panning[0] = 0
 			inst.panning[1] = 0
@@ -308,16 +293,16 @@ func (p *Player) Init(tune []byte, opl3Fn func(uint16, uint8)) string {
 			inst.detune = 0
 			inst.riffSpeed = 0
 			inst.volume = 64
-			inst.operators[0][0] = s[0]  // mod AVEKM
-			inst.operators[1][0] = s[1]  // car AVEKM
-			inst.operators[0][1] = s[2]  // mod KSLTL
-			inst.operators[1][1] = s[3]  // car KSLTL
-			inst.operators[0][2] = s[4]  // mod ARDR
-			inst.operators[1][2] = s[5]  // car ARDR
-			inst.operators[0][3] = s[6]  // mod SLRR
-			inst.operators[1][3] = s[7]  // car SLRR
-			inst.operators[0][4] = s[9]  // mod WAVE
-			inst.operators[1][4] = s[10] // car WAVE
+			inst.operators[0][0] = s[0]
+			inst.operators[1][0] = s[1]
+			inst.operators[0][1] = s[2]
+			inst.operators[1][1] = s[3]
+			inst.operators[0][2] = s[4]
+			inst.operators[1][2] = s[5]
+			inst.operators[0][3] = s[6]
+			inst.operators[1][3] = s[7]
+			inst.operators[0][4] = s[9]
+			inst.operators[1][4] = s[10]
 			inst.operators[2] = [5]uint8{}
 			inst.operators[3] = [5]uint8{}
 			inst.riff = nil
@@ -325,13 +310,11 @@ func (p *Player) Init(tune []byte, opl3Fn func(uint16, uint8)) string {
 		}
 	}
 
-	// Order list
 	p.orderListSize = s[0]
 	s = s[1:]
 	p.orderList = s[:p.orderListSize]
 	s = s[p.orderListSize:]
 
-	// Tracks
 	if p.version >= 2 {
 		for {
 			trackNum := s[0]
@@ -344,7 +327,6 @@ func (p *Player) Init(tune []byte, opl3Fn func(uint16, uint8)) string {
 			p.tracks[trackNum] = s[:size]
 			s = s[size:]
 		}
-		// Riffs
 		for {
 			riffID := s[0]
 			s = s[1:]
@@ -361,7 +343,6 @@ func (p *Player) Init(tune []byte, opl3Fn func(uint16, uint8)) string {
 			s = s[size:]
 		}
 	} else {
-		// v1: 32 x uint16 LE absolute offsets
 		for i := 0; i < 32; i++ {
 			pos := int(s[0]) | (int(s[1]) << 8)
 			s = s[2:]
@@ -381,7 +362,6 @@ func (p *Player) Init(tune []byte, opl3Fn func(uint16, uint8)) string {
 
 // Stop halts all sounds and resets playback to the beginning.
 func (p *Player) Stop() {
-	// Clear OPL3 state
 	for reg := uint16(0x20); reg < 0xF6; reg++ {
 		var val uint8
 		if reg >= 0x60 && reg < 0xA0 {
@@ -477,7 +457,6 @@ func (p *Player) getTrack() []byte {
 		p.order = trackNum & 0x7F
 		trackNum = p.orderList[p.order] & 0x7F
 	}
-	// Track repeat detection
 	if p.order < 128 {
 		byteIdx := p.order >> 5
 		bit := uint32(1) << (p.order & 31)
@@ -503,7 +482,6 @@ func (p *Player) skipToLine(trk []byte, linenum uint8, chanRiff bool) []byte {
 			break
 		}
 		trk = trk[1:]
-		// Skip channel notes
 		for {
 			if len(trk) == 0 {
 				return nil
@@ -514,15 +492,14 @@ func (p *Player) skipToLine(trk []byte, linenum uint8, chanRiff bool) []byte {
 				size := int(radNoteSize[(chanID>>4)&7])
 				trk = trk[size:]
 			} else {
-				// v1: note byte + inst/effect byte + optional param byte
 				if len(trk) < 2 {
 					return nil
 				}
 				instEffect := trk[1]
 				if instEffect&0x0f != 0 {
-					trk = trk[3:] // note + inst/effect + param
+					trk = trk[3:]
 				} else {
-					trk = trk[2:] // note + inst/effect
+					trk = trk[2:]
 				}
 			}
 			if chanID&0x80 != 0 || chanRiff {
@@ -547,7 +524,6 @@ func (p *Player) unpackNote(s []byte, lastInstrument *uint8) ([]byte, bool) {
 	note := uint8(0)
 
 	if p.version >= 2 {
-		// v2 note format
 		if chanID&0x40 != 0 {
 			n := s[0]
 			s = s[1:]
@@ -568,12 +544,11 @@ func (p *Player) unpackNote(s []byte, lastInstrument *uint8) ([]byte, bool) {
 			s = s[1:]
 		}
 	} else {
-		// v1 note format: note byte, then inst/effect byte, optional param
 		n := s[0]
 		s = s[1:]
 		note = n & 0x7F
 		if n&0x80 != 0 {
-			p.instNum = 16 // high bit of instrument number
+			p.instNum = 16
 		}
 		n = s[0]
 		s = s[1:]
@@ -664,7 +639,6 @@ func (p *Player) playNote(chanNum int, notenum, octave int8, instnum uint16, cmd
 			fx.toneSlideOct = uint8(octave)
 			fx.toneSlideFreq = radNoteFreq[notenum-1]
 		}
-		// apply tone-slide speed directly (same as the toneslide label)
 		speedVal := param
 		if speedVal != 0 {
 			fx.toneSlideSpeed = speedVal
@@ -774,14 +748,12 @@ func (p *Player) playNote(chanNum int, notenum, octave int8, instnum uint16, cmd
 			val = -(val - 50)
 		}
 		fx.volSlide = val
-		// also apply tone-slide
 		speed := param
 		if speed != 0 {
 			fx.toneSlideSpeed = speed
 		}
 		p.getSlideDir(chanNum, fx)
 	case cmToneSlide:
-		// handled above before the instrument/note processing
 	case cmVolSlide:
 		val := int8(param)
 		if val >= 50 {
@@ -824,7 +796,6 @@ func (p *Player) loadInstrumentOPL3(chanNum int) {
 	ch.detuneB = inst.detune >> 1
 
 	if p.useOPL3 {
-		// OPL3: 4-op support
 		if chanNum < 6 {
 			mask := uint8(1 << uint(chanNum))
 			var fourOp uint8
@@ -867,7 +838,6 @@ func (p *Player) loadInstrumentOPL3(chanNum int) {
 			p.setOPL3(reg+0xE0, op[4])
 		}
 	} else {
-		// OPL2: 2-op, simple channel offset
 		algBit := uint8(0)
 		if alg == 1 {
 			algBit = 1
@@ -878,7 +848,6 @@ func (p *Player) loadInstrumentOPL3(chanNum int) {
 			op := inst.operators[i]
 			reg := radOpOffsets2[chanNum][i]
 			vol := uint16(^op[1]) & 0x3F
-			// alg 0 = FM (only op[1] is carrier), alg 1 = additive (both carriers)
 			if radAlgCarriers[alg][i] {
 				vol = vol * uint16(inst.volume) / 64
 				vol = vol * uint16(p.masterVol) / 64
@@ -900,7 +869,7 @@ func (p *Player) playNoteOPL3(chanNum int, octave, note int8) {
 		o1 = radChanOffsets3[chanNum]
 		o2 = radChn2Offsets3[chanNum]
 	} else {
-		o1 = 0 // unused for OPL2
+		o1 = 0
 		o2 = uint16(chanNum)
 	}
 
@@ -1004,7 +973,6 @@ func (p *Player) tickRiff(chanNum int, riff *radRiff, chanRiff bool) {
 		riff.track = trk
 	}
 
-	// Check for jump command on next line
 	if trk == nil {
 		return
 	}

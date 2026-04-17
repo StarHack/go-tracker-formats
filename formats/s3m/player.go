@@ -6,7 +6,7 @@ package s3m
 import (
 	"encoding/binary"
 	"math"
-	"rad2wav/formats"
+	"github.com/StarHack/go-tracker-formats/formats"
 	"strings"
 )
 

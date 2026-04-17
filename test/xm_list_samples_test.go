@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"rad2wav/formats/xm"
+	"github.com/StarHack/go-tracker-formats/formats/xm"
 )
 
 // TestXM_ListSamples prints all instruments and samples in a readable tree.

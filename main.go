@@ -14,13 +14,13 @@ import (
 	"path/filepath"
 	"strings"
 
-	"rad2wav/formats"
-	"rad2wav/formats/mod"
-	radv1 "rad2wav/formats/rad-v1"
-	radv2 "rad2wav/formats/rad-v2"
-	"rad2wav/formats/s3m"
-	"rad2wav/formats/xm"
-	"rad2wav/opal"
+	"github.com/StarHack/go-tracker-formats/formats"
+	"github.com/StarHack/go-tracker-formats/formats/mod"
+	radv1 "github.com/StarHack/go-tracker-formats/formats/rad-v1"
+	radv2 "github.com/StarHack/go-tracker-formats/formats/rad-v2"
+	"github.com/StarHack/go-tracker-formats/formats/s3m"
+	"github.com/StarHack/go-tracker-formats/formats/xm"
+	"github.com/StarHack/go-tracker-formats/opal"
 )
 
 const defaultSampleRate = 44100

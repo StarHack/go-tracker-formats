@@ -2,7 +2,7 @@
 // Pure Go port of the RAD v2.1 replayer by Shayde/Reality (public domain).
 package radv2
 
-import "rad2wav/formats"
+import "github.com/StarHack/go-tracker-formats/formats"
 
 
 const (

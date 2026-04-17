@@ -2,7 +2,7 @@
 // Pure Go port of the RAD v1 replayer by Shayde/Reality (public domain).
 package radv1
 
-import "rad2wav/formats"
+import "github.com/StarHack/go-tracker-formats/formats"
 
 const (
 	kChannels    = 9

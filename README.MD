@@ -18,9 +18,11 @@ https://www.3eality.com/Public/Modules/
 
 ## Formats
 
+Multiple formats were implemented independently and the idea is you may use parts of this library for your use case.
+
 ### RAD
 
-Ports some concepts of Reality Adlib Tracker context:
+Ports some concepts of Reality Adlib Tracker format into pure Go code:
 
 - **OPAL** is the OPL3 emulator bundled with RAD V1/V2. It emulates Yamaha OPL3 FM-synthesis hardware so RAD tunes can be played on machines that do not have real OPL3 hardware. In the RAD docs, it is explicitly described as “an OPL3 emulator” included with RAD V1/V2.
 
@@ -30,12 +32,13 @@ Ports some concepts of Reality Adlib Tracker context:
 
 ### MOD
 
-- **MOD** support is implemented independently from the RAD players as a PCM/sample-based tracker path rather than an OPL/FM path.
+- **MOD** support is implemented as a PCM/sample-based tracker path rather than an OPL/FM path.
 
 - The current MOD implementation targets classic 4-channel 15-sample Soundtracker/NoiseTracker style modules as well as tagged 31-sample ProTracker-compatible variants such as `M.K.`, `M!K!`, `FLT4/8`, `xCHN`, and `xxCH`.
 
-- **XM / FastTracker 2** should not be treated as “just another MOD variant” in the same package. It belongs in its own `formats/xm/` package because XM adds a substantially different file structure and playback model: compressed pattern events, instruments with note-to-sample maps, envelopes, fadeout, 8/16-bit delta-coded samples, ping-pong loops, volume-column commands, and linear-frequency playback.
-- The existing test only compares row/tempo/speed state transitions — not actual audio samples. We need to compare real PCM output. Let me write a test that does that.
+### XM
+
+- **XM / FastTracker 2** implemented in its own `formats/xm/` package because XM adds a substantially different file structure and playback model: compressed pattern events, instruments with note-to-sample maps, envelopes, fadeout, 8/16-bit delta-coded samples, ping-pong loops, volume-column commands, and linear-frequency playback.
 
 ## Testcases
 

@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/StarHack/go-tracker-formats/formats"
+	"github.com/StarHack/go-tracker-formats/formats/ftm"
 	"github.com/StarHack/go-tracker-formats/formats/it"
 	"github.com/StarHack/go-tracker-formats/formats/mod"
 	radv1 "github.com/StarHack/go-tracker-formats/formats/rad-v1"
@@ -26,7 +27,7 @@ func main() {
 	outFlag := flag.String("o", "", "output file (.wav or .mp3; default: input basename + .wav)")
 	rateFlag := flag.Int("rate", defaultSampleRate, "output sample rate in Hz")
 	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: module-to-stream [options] input.{rad,mod,s3m,xm,it}\n\nOptions:\n")
+		fmt.Fprintf(os.Stderr, "Usage: module-to-stream [options] input.{rad,mod,s3m,xm,it,ftm}\n\nOptions:\n")
 		flag.PrintDefaults()
 	}
 	flag.Parse()
@@ -103,6 +104,9 @@ func detect(tune []byte) (interface{}, string) {
 			}
 		}
 	}
+	if e := ftm.Validate(tune); e == nil {
+		return &ftm.Player{}, ""
+	}
 	if e := it.Validate(tune); e == nil {
 		return &it.Player{}, ""
 	}
@@ -115,7 +119,7 @@ func detect(tune []byte) (interface{}, string) {
 	if e := mod.Validate(tune); e == nil {
 		return &mod.Player{}, ""
 	}
-	return nil, "Unrecognised file format (not RAD v1/v2, IT, XM, S3M, or MOD)."
+	return nil, "Unrecognised file format (not RAD v1/v2, FTM, IT, XM, S3M, or MOD)."
 }
 
 func renderToSamples(tune []byte, sampleRate int, tracker interface{}) []int16 {
@@ -162,8 +166,9 @@ func renderPCM(tune []byte, sampleRate int, player formats.PCMTracker) []int16 {
 		fmt.Fprintf(os.Stderr, "Error: player init failed: %s\n", e)
 		os.Exit(1)
 	}
+	const maxStereoSamples = 44100 * 600 * 2 // 10 minutes stereo safety cap (looping players)
 	var out []int16
-	for {
+	for len(out) < maxStereoSamples {
 		var l, r int16
 		if player.Sample(&l, &r) {
 			break
@@ -264,13 +269,16 @@ func printInfo(tracker interface{}) {
 	case *it.Player:
 		label = "IT (Impulse Tracker)"
 		desc = t.GetDescription()
+	case *ftm.Player:
+		label = "FTM (FamiTracker)"
+		desc = t.GetDescription()
 	}
 	fmt.Printf("Format: %s\n", label)
 	if len(desc) == 0 {
 		return
 	}
 	switch tracker.(type) {
-	case *mod.Player, *s3m.Player, *xm.Player, *it.Player:
+	case *mod.Player, *s3m.Player, *xm.Player, *it.Player, *ftm.Player:
 		fmt.Printf("Title:  %s\n", string(desc))
 	default:
 		printRADDescription(desc)

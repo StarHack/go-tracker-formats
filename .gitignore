@@ -1,6 +1,7 @@
 .DS_Store
 *.wav
 rad2wav
+examples/it-player/it-player
 examples/mod-player/mod-player
 examples/module-to-wav/module-to-wav
 examples/rad-player/rad-player

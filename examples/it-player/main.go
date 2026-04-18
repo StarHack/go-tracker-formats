@@ -11,17 +11,17 @@ import (
 
 	"github.com/ebitengine/oto/v3"
 
-	"github.com/StarHack/go-tracker-formats/formats/mod"
+	"github.com/StarHack/go-tracker-formats/formats/it"
 )
 
-type modPCMStream struct {
-	player     *mod.Player
+type itPCMStream struct {
+	player     *it.Player
 	maxSamples int
 	sent       int
 	done       bool
 }
 
-func (s *modPCMStream) Read(p []byte) (int, error) {
+func (s *itPCMStream) Read(p []byte) (int, error) {
 	if s.done {
 		return 0, io.EOF
 	}
@@ -48,12 +48,10 @@ func (s *modPCMStream) Read(p []byte) (int, error) {
 	return written, nil
 }
 
-func resolveDefaultMODPath() string {
+func resolveDefaultITPath() string {
 	candidates := []string{
-		filepath.Join("sample-data", "space_debris.mod"),
-		filepath.Join("..", "..", "sample-data", "space_debris.mod"),
-		filepath.Join("Void - Waves.mod"),
-		filepath.Join("..", "..", "Void - Waves.mod"),
+		filepath.Join("sample-data", "ether_audio_-_under_the_map.it"),
+		filepath.Join("..", "..", "sample-data", "ether_audio_-_under_the_map.it"),
 	}
 	for _, c := range candidates {
 		if _, err := os.Stat(c); err == nil {
@@ -64,37 +62,25 @@ func resolveDefaultMODPath() string {
 }
 
 func main() {
-	modPath := flag.String("mod", "", "Path to MOD file")
+	itPath := flag.String("it", "", "Path to IT (Impulse Tracker) module")
 	rate := flag.Int("rate", 44100, "Playback sample rate")
 	seconds := flag.Int("seconds", 0, "Playback duration in seconds (0 = until module repeats)")
-	mono := flag.Bool("mono", false, "Enable mono output mix")
-	stereoSeparation := flag.Int("stereo-separation", 255, "Stereo separation (0..255)")
 	flag.Parse()
 
-	path := *modPath
+	path := *itPath
 	if path == "" {
-		path = resolveDefaultMODPath()
-	}
-
-	if *stereoSeparation < 0 || *stereoSeparation > 255 {
-		fmt.Fprintf(os.Stderr, "stereo-separation must be 0..255\n")
-		os.Exit(1)
+		path = resolveDefaultITPath()
 	}
 
 	moduleData, err := os.ReadFile(path)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "read mod: %v\n", err)
+		fmt.Fprintf(os.Stderr, "read it: %v\n", err)
 		os.Exit(1)
 	}
 
-	pl := &mod.Player{}
-	if *mono {
-		pl.SetMono(true)
-	} else {
-		pl.SetStereoSeparation(*stereoSeparation)
-	}
+	pl := &it.Player{}
 	if e := pl.Init(moduleData, *rate); e != "" {
-		fmt.Fprintf(os.Stderr, "init mod player: %s\n", e)
+		fmt.Fprintf(os.Stderr, "init it player: %s\n", e)
 		os.Exit(1)
 	}
 
@@ -113,7 +99,7 @@ func main() {
 	if *seconds > 0 {
 		maxSamples = *rate * *seconds
 	}
-	stream := &modPCMStream{player: pl, maxSamples: maxSamples}
+	stream := &itPCMStream{player: pl, maxSamples: maxSamples}
 	op := ctx.NewPlayer(stream)
 	defer op.Close()
 

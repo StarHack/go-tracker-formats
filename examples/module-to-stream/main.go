@@ -1,14 +1,17 @@
 package main
 
 import (
+	"bytes"
 	"encoding/binary"
 	"flag"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 
 	"github.com/StarHack/go-tracker-formats/formats"
+	"github.com/StarHack/go-tracker-formats/formats/it"
 	"github.com/StarHack/go-tracker-formats/formats/mod"
 	radv1 "github.com/StarHack/go-tracker-formats/formats/rad-v1"
 	radv2 "github.com/StarHack/go-tracker-formats/formats/rad-v2"
@@ -20,10 +23,10 @@ import (
 const defaultSampleRate = 44100
 
 func main() {
-	outFlag := flag.String("o", "", "output WAV file (default: input basename + .wav)")
+	outFlag := flag.String("o", "", "output file (.wav or .mp3; default: input basename + .wav)")
 	rateFlag := flag.Int("rate", defaultSampleRate, "output sample rate in Hz")
 	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: module-to-wav [options] input.{rad,mod,s3m,xm}\n\nOptions:\n")
+		fmt.Fprintf(os.Stderr, "Usage: module-to-stream [options] input.{rad,mod,s3m,xm,it}\n\nOptions:\n")
 		flag.PrintDefaults()
 	}
 	flag.Parse()
@@ -66,8 +69,8 @@ func main() {
 	samples := renderToSamples(tune, sampleRate, tracker)
 	fmt.Printf("Done: %d samples (%.2f seconds)\n", len(samples)/2, float64(len(samples)/2)/float64(sampleRate))
 
-	if err := writeWAV(outFile, samples, sampleRate); err != nil {
-		fmt.Fprintf(os.Stderr, "Error writing WAV: %v\n", err)
+	if err := writeOutput(outFile, samples, sampleRate); err != nil {
+		fmt.Fprintf(os.Stderr, "Error writing output: %v\n", err)
 		os.Exit(1)
 	}
 	fmt.Printf("Written: %s\n", outFile)
@@ -100,6 +103,9 @@ func detect(tune []byte) (interface{}, string) {
 			}
 		}
 	}
+	if e := it.Validate(tune); e == nil {
+		return &it.Player{}, ""
+	}
 	if e := xm.Validate(tune); e == nil {
 		return &xm.Player{}, ""
 	}
@@ -109,7 +115,7 @@ func detect(tune []byte) (interface{}, string) {
 	if e := mod.Validate(tune); e == nil {
 		return &mod.Player{}, ""
 	}
-	return nil, "Unrecognised file format (not RAD v1/v2, XM, S3M, or MOD)."
+	return nil, "Unrecognised file format (not RAD v1/v2, IT, XM, S3M, or MOD)."
 }
 
 func renderToSamples(tune []byte, sampleRate int, tracker interface{}) []int16 {
@@ -167,6 +173,17 @@ func renderPCM(tune []byte, sampleRate int, player formats.PCMTracker) []int16 {
 	return out
 }
 
+func writeOutput(path string, samples []int16, sampleRate int) error {
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".wav":
+		return writeWAV(path, samples, sampleRate)
+	case ".mp3":
+		return writeMP3(path, samples, sampleRate)
+	default:
+		return fmt.Errorf("unsupported output extension %q (use .wav or .mp3)", filepath.Ext(path))
+	}
+}
+
 func writeWAV(path string, samples []int16, sampleRate int) error {
 	f, err := os.Create(path)
 	if err != nil {
@@ -182,11 +199,11 @@ func writeWAV(path string, samples []int16, sampleRate int) error {
 		riffSize      = 36 + dataSize
 	)
 	le := binary.LittleEndian
-	w := func(v interface{}) { binary.Write(f, le, v) }
-	f.WriteString("RIFF")
+	w := func(v interface{}) { _ = binary.Write(f, le, v) }
+	_, _ = f.WriteString("RIFF")
 	w(riffSize)
-	f.WriteString("WAVE")
-	f.WriteString("fmt ")
+	_, _ = f.WriteString("WAVE")
+	_, _ = f.WriteString("fmt ")
 	w(uint32(16))
 	w(uint16(1))
 	w(numChannels)
@@ -194,9 +211,34 @@ func writeWAV(path string, samples []int16, sampleRate int) error {
 	w(byteRate)
 	w(blockAlign)
 	w(bitsPerSample)
-	f.WriteString("data")
+	_, _ = f.WriteString("data")
 	w(dataSize)
 	w(samples)
+	return nil
+}
+
+func writeMP3(path string, samples []int16, sampleRate int) error {
+	cmd := exec.Command(
+		"ffmpeg",
+		"-y",
+		"-f", "s16le",
+		"-ar", fmt.Sprintf("%d", sampleRate),
+		"-ac", "2",
+		"-i", "-",
+		"-vn",
+		"-codec:a", "libmp3lame",
+		path,
+	)
+	var pcm bytes.Buffer
+	if err := binary.Write(&pcm, binary.LittleEndian, samples); err != nil {
+		return err
+	}
+	cmd.Stdin = &pcm
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("ffmpeg mp3 encode failed (is ffmpeg installed?): %w", err)
+	}
 	return nil
 }
 
@@ -219,13 +261,16 @@ func printInfo(tracker interface{}) {
 	case *xm.Player:
 		label = "XM"
 		desc = t.GetDescription()
+	case *it.Player:
+		label = "IT (Impulse Tracker)"
+		desc = t.GetDescription()
 	}
 	fmt.Printf("Format: %s\n", label)
 	if len(desc) == 0 {
 		return
 	}
 	switch tracker.(type) {
-	case *mod.Player, *s3m.Player, *xm.Player:
+	case *mod.Player, *s3m.Player, *xm.Player, *it.Player:
 		fmt.Printf("Title:  %s\n", string(desc))
 	default:
 		printRADDescription(desc)

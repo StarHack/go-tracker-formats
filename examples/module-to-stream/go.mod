@@ -1,4 +1,4 @@
-module github.com/StarHack/go-tracker-formats/examples/module-to-wav
+module github.com/StarHack/go-tracker-formats/examples/module-to-stream
 
 go 1.24.0
 

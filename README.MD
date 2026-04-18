@@ -6,10 +6,10 @@ Supports working with the following listed formats. For implementation guideline
 - MOD
 - XM (FastTracker 2 style modules)
 - S3M (partially)
+- IT (Impulse Tracker module, partial playback in `formats/it/`)
 
 Planned support (not yet there):
 
-- IT (Impulse Tracker module)
 - FTM (FamiTracker music / NES chiptune scene)
 
 ## Formats
@@ -40,6 +40,10 @@ Ports some concepts of Reality Adlib Tracker format into pure Go code. They do p
 
 - Only supports some core effects so far
 
+### IT
+
+- **IT / Impulse Tracker** lives in `formats/it/`. The loader covers the on-disk header, instrument/sample headers, pattern unpacking, and IT 2.14 sample compression. The player is intentionally minimal (core row timing, note/sample/instrument routing, global volume, and a few row commands such as speed and tempo).
+
 ## Testcases
 
 ### XM
@@ -52,3 +56,9 @@ go test -run TestXM_ExtractSamples -v ./test -args \
   -xm_extract_out_dir "../sample-data/extracted"
 
 ```
+
+## Tutorials
+
+Fasttracker II Clone v.155 - Making An Easy Trance, EDM Beat
+
+https://www.youtube.com/watch?v=0O3zM0GHGW0

@@ -16,7 +16,7 @@ type Tracker interface {
 	GetDescription() []byte
 }
 
-// PCMTracker is implemented by sample-based formats (MOD, S3M, XM…).
+// PCMTracker is implemented by sample-based formats (MOD, S3M, XM, IT…).
 // It generates PCM audio directly without OPL synthesis.
 // Sample() manages its own internal tick timing at the given sample rate.
 type PCMTracker interface {

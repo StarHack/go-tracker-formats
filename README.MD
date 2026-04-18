@@ -42,7 +42,7 @@ Ports some concepts of Reality Adlib Tracker format into pure Go code. They do p
 
 ### IT
 
-- **IT / Impulse Tracker** lives in `formats/it/`. The loader covers the on-disk header, instrument/sample headers, pattern unpacking, and IT 2.14 sample compression. The player is intentionally minimal (core row timing, note/sample/instrument routing, global volume, and a few row commands such as speed and tempo).
+- **IT / Impulse Tracker** lives in `formats/it/`. The loader covers the on-disk header, instrument/sample headers, pattern unpacking, and IT 2.14 sample compression. The player is still minimal at this stage (core row timing, note/sample/instrument routing, global volume, and a few row commands such as speed and tempo).
 
 ## Testcases
 
@@ -57,8 +57,3 @@ go test -run TestXM_ExtractSamples -v ./test -args \
 
 ```
 
-## Tutorials
-
-Fasttracker II Clone v.155 - Making An Easy Trance, EDM Beat
-
-https://www.youtube.com/watch?v=0O3zM0GHGW0

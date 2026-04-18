@@ -6,7 +6,7 @@ Supports working with the following listed formats. For implementation guideline
 - MOD
 - XM (FastTracker 2 style modules)
 - S3M (partially)
-- IT (Impulse Tracker module, partial playback in `formats/it/`)
+- IT (Impulse Tracker module, partially works)
 
 Planned support (not yet there):
 

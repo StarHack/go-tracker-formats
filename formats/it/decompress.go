@@ -56,7 +56,7 @@ func (b *bitReader) readBits(width int) (int, error) {
 	return v, nil
 }
 
-func decompressIT8(data []byte, length int, it215 bool) ([]int8, error) {
+func decompressIT8(data []byte, length int, it215 bool) ([]int8, int, error) {
 	const (
 		defWidth = 9
 		fetchA   = 3
@@ -69,7 +69,7 @@ func decompressIT8(data []byte, length int, it215 bool) ([]int8, error) {
 	pos := 0
 	for written < length {
 		if pos+2 > len(data) {
-			return nil, fmt.Errorf("truncated IT compressed 8-bit stream")
+			return nil, pos, fmt.Errorf("truncated IT compressed 8-bit stream")
 		}
 		blk := int(binary.LittleEndian.Uint16(data[pos:]))
 		pos += 2
@@ -77,7 +77,7 @@ func decompressIT8(data []byte, length int, it215 bool) ([]int8, error) {
 			continue
 		}
 		if pos+blk > len(data) {
-			return nil, fmt.Errorf("truncated IT compressed 8-bit block")
+			return nil, pos, fmt.Errorf("truncated IT compressed 8-bit block")
 		}
 		br := bitReader{data: data[pos : pos+blk]}
 		pos += blk
@@ -89,18 +89,18 @@ func decompressIT8(data []byte, length int, it215 bool) ([]int8, error) {
 		width := defWidth
 		for curLen > 0 {
 			if width > defWidth {
-				return nil, fmt.Errorf("invalid IT8 bit width")
+				return nil, pos, fmt.Errorf("invalid IT8 bit width")
 			}
 			v, err := br.readBits(width)
 			if err != nil {
-				return out[:written], err
+				return out[:written], pos, err
 			}
 			top := 1 << (width - 1)
 			if width <= 6 {
 				if v == top {
 					nw, err := br.readBits(fetchA)
 					if err != nil {
-						return out[:written], err
+						return out[:written], pos, err
 					}
 					changeWidth(&width, nw)
 					continue
@@ -155,12 +155,12 @@ func decompressIT8(data []byte, length int, it215 bool) ([]int8, error) {
 		}
 	}
 	if written < length {
-		return nil, fmt.Errorf("IT8 decompression short: got %d want %d", written, length)
+		return nil, pos, fmt.Errorf("IT8 decompression short: got %d want %d", written, length)
 	}
-	return out, nil
+	return out, pos, nil
 }
 
-func decompressIT16(data []byte, length int, it215 bool) ([]int16, error) {
+func decompressIT16(data []byte, length int, it215 bool) ([]int16, int, error) {
 	const (
 		defWidth = 17
 		fetchA   = 4
@@ -173,7 +173,7 @@ func decompressIT16(data []byte, length int, it215 bool) ([]int16, error) {
 	pos := 0
 	for written < length {
 		if pos+2 > len(data) {
-			return nil, fmt.Errorf("truncated IT compressed 16-bit stream")
+			return nil, pos, fmt.Errorf("truncated IT compressed 16-bit stream")
 		}
 		blk := int(binary.LittleEndian.Uint16(data[pos:]))
 		pos += 2
@@ -181,7 +181,7 @@ func decompressIT16(data []byte, length int, it215 bool) ([]int16, error) {
 			continue
 		}
 		if pos+blk > len(data) {
-			return nil, fmt.Errorf("truncated IT compressed 16-bit block")
+			return nil, pos, fmt.Errorf("truncated IT compressed 16-bit block")
 		}
 		br := bitReader{data: data[pos : pos+blk]}
 		pos += blk
@@ -193,18 +193,18 @@ func decompressIT16(data []byte, length int, it215 bool) ([]int16, error) {
 		width := defWidth
 		for curLen > 0 {
 			if width > defWidth {
-				return nil, fmt.Errorf("invalid IT16 bit width")
+				return nil, pos, fmt.Errorf("invalid IT16 bit width")
 			}
 			v, err := br.readBits(width)
 			if err != nil {
-				return out[:written], err
+				return out[:written], pos, err
 			}
 			top := 1 << (width - 1)
 			if width <= 6 {
 				if v == top {
 					nw, err := br.readBits(fetchA)
 					if err != nil {
-						return out[:written], err
+						return out[:written], pos, err
 					}
 					changeWidth(&width, nw)
 					continue
@@ -259,12 +259,12 @@ func decompressIT16(data []byte, length int, it215 bool) ([]int16, error) {
 		}
 	}
 	if written < length {
-		return nil, fmt.Errorf("IT16 decompression short: got %d want %d", written, length)
+		return nil, pos, fmt.Errorf("IT16 decompression short: got %d want %d", written, length)
 	}
-	return out, nil
+	return out, pos, nil
 }
 
-func decompressIT16Stereo(data []byte, frames int, it215 bool) ([]int16, error) {
+func decompressIT16Stereo(data []byte, frames int, it215 bool) ([]int16, int, error) {
 	const (
 		defWidth = 17
 		fetchA   = 4
@@ -278,7 +278,7 @@ func decompressIT16Stereo(data []byte, frames int, it215 bool) ([]int16, error) 
 		mem1, mem2 := 0, 0
 		for written < frames {
 			if pos+2 > len(data) {
-				return nil, fmt.Errorf("truncated IT stereo compressed 16-bit stream")
+				return nil, pos, fmt.Errorf("truncated IT stereo compressed 16-bit stream")
 			}
 			blk := int(binary.LittleEndian.Uint16(data[pos:]))
 			pos += 2
@@ -286,7 +286,7 @@ func decompressIT16Stereo(data []byte, frames int, it215 bool) ([]int16, error) 
 				continue
 			}
 			if pos+blk > len(data) {
-				return nil, fmt.Errorf("truncated IT stereo compressed 16-bit block")
+				return nil, pos, fmt.Errorf("truncated IT stereo compressed 16-bit block")
 			}
 			br := bitReader{data: data[pos : pos+blk]}
 			pos += blk
@@ -297,18 +297,18 @@ func decompressIT16Stereo(data []byte, frames int, it215 bool) ([]int16, error) 
 			width := defWidth
 			for curLen > 0 {
 				if width > defWidth {
-					return nil, fmt.Errorf("invalid IT16 stereo bit width")
+					return nil, pos, fmt.Errorf("invalid IT16 stereo bit width")
 				}
 				v, err := br.readBits(width)
 				if err != nil {
-					return nil, err
+					return nil, pos, err
 				}
 				top := 1 << (width - 1)
 				if width <= 6 {
 					if v == top {
 						nw, err := br.readBits(fetchA)
 						if err != nil {
-							return nil, err
+							return nil, pos, err
 						}
 						changeWidth(&width, nw)
 						continue
@@ -369,10 +369,10 @@ func decompressIT16Stereo(data []byte, frames int, it215 bool) ([]int16, error) 
 			}
 		}
 	}
-	return out, nil
+	return out, pos, nil
 }
 
-func decompressIT8Stereo(data []byte, frames int, it215 bool) ([]int16, error) {
+func decompressIT8Stereo(data []byte, frames int, it215 bool) ([]int16, int, error) {
 	const (
 		defWidth = 9
 		fetchA   = 3
@@ -386,7 +386,7 @@ func decompressIT8Stereo(data []byte, frames int, it215 bool) ([]int16, error) {
 		mem1, mem2 := 0, 0
 		for written < frames {
 			if pos+2 > len(data) {
-				return nil, fmt.Errorf("truncated IT stereo compressed 8-bit stream")
+				return nil, pos, fmt.Errorf("truncated IT stereo compressed 8-bit stream")
 			}
 			blk := int(binary.LittleEndian.Uint16(data[pos:]))
 			pos += 2
@@ -394,7 +394,7 @@ func decompressIT8Stereo(data []byte, frames int, it215 bool) ([]int16, error) {
 				continue
 			}
 			if pos+blk > len(data) {
-				return nil, fmt.Errorf("truncated IT stereo compressed 8-bit block")
+				return nil, pos, fmt.Errorf("truncated IT stereo compressed 8-bit block")
 			}
 			br := bitReader{data: data[pos : pos+blk]}
 			pos += blk
@@ -405,11 +405,11 @@ func decompressIT8Stereo(data []byte, frames int, it215 bool) ([]int16, error) {
 			width := defWidth
 			for curLen > 0 {
 				if width > defWidth {
-					return nil, fmt.Errorf("invalid IT8 stereo bit width")
+					return nil, pos, fmt.Errorf("invalid IT8 stereo bit width")
 				}
 				v, err := br.readBits(width)
 				if err != nil {
-					return nil, err
+					return nil, pos, err
 				}
 				top := 1 << (width - 1)
 				var sv int8
@@ -417,7 +417,7 @@ func decompressIT8Stereo(data []byte, frames int, it215 bool) ([]int16, error) {
 					if v == top {
 						nw, err := br.readBits(fetchA)
 						if err != nil {
-							return nil, err
+							return nil, pos, err
 						}
 						changeWidth(&width, nw)
 						continue
@@ -473,5 +473,5 @@ func decompressIT8Stereo(data []byte, frames int, it215 bool) ([]int16, error) {
 			}
 		}
 	}
-	return out, nil
+	return out, pos, nil
 }

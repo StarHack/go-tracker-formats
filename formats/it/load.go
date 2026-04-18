@@ -12,15 +12,15 @@ const (
 )
 
 type itEnvelopeData struct {
-	Valid      bool
-	Flags      uint8
-	Num        uint8
-	LoopStart  uint8
-	LoopEnd    uint8
-	SusStart   uint8
-	SusEnd     uint8
-	NodeY      [25]uint8
-	NodeTick   [25]uint16
+	Valid     bool
+	Flags     uint8
+	Num       uint8
+	LoopStart uint8
+	LoopEnd   uint8
+	SusStart  uint8
+	SusEnd    uint8
+	NodeY     [25]uint8
+	NodeTick  [25]uint16
 }
 
 type itInstrument struct {
@@ -175,11 +175,25 @@ func loadModule(data []byte) (*Module, error) {
 		}
 	}
 
+	poolStart := itSampleDataPoolStart(data, ptrEnd, m.Flags, m.Special, m.InsPtrs, m.SmpPtrs, m.PatPtrs, msgOff, msgLen)
+	useSeqPool := itAllSamplePayloadPointersZero(data, m.SmpPtrs)
+	seq := poolStart
+
 	m.Samples = make([]itSample, smpNum+1)
 	for i := 0; i < smpNum; i++ {
-		s, err := decodeSample(data, int(m.SmpPtrs[i]), m.Cmwt, m.Cwtv)
+		var s itSample
+		var n int
+		var err error
+		if useSeqPool {
+			s, n, err = decodeSample(data, int(m.SmpPtrs[i]), m.Cmwt, m.Cwtv, &seq)
+		} else {
+			s, n, err = decodeSample(data, int(m.SmpPtrs[i]), m.Cmwt, m.Cwtv, nil)
+		}
 		if err != nil {
 			return nil, fmt.Errorf("sample %d: %w", i+1, err)
+		}
+		if useSeqPool {
+			seq += n
 		}
 		m.Samples[i+1] = s
 	}
@@ -223,13 +237,116 @@ func parseITEnvelope(data []byte, off int) itEnvelopeData {
 	return e
 }
 
-func decodeSample(data []byte, off int, cmwt, cwtv uint16) (itSample, error) {
+func itFileMinEmbeddedPtr(ins, smp, pat []uint32, msgOff uint32, msgLen uint16, special uint16, fileLen int) int {
+	minPtr := int(^uint32(0) >> 1)
+	for _, p := range ins {
+		if p > 0 && int(p) < minPtr {
+			minPtr = int(p)
+		}
+	}
+	for _, p := range smp {
+		if p > 0 && int(p) < minPtr {
+			minPtr = int(p)
+		}
+	}
+	for _, p := range pat {
+		if p > 0 && int(p) < minPtr {
+			minPtr = int(p)
+		}
+	}
+	if special&0x01 != 0 && msgLen > 0 && msgOff > 0 && int(msgOff) < minPtr {
+		minPtr = int(msgOff)
+	}
+	if minPtr < 0 || minPtr > fileLen {
+		minPtr = fileLen
+	}
+	return minPtr
+}
+
+func itPatternPackedEnd(data []byte, patOff int) int {
+	if patOff <= 0 || patOff+8 > len(data) {
+		return 0
+	}
+	packedLen := int(binary.LittleEndian.Uint16(data[patOff:]))
+	end := patOff + 8 + packedLen
+	if end > len(data) {
+		return len(data)
+	}
+	return end
+}
+
+// itSampleDataPoolStart is the first file offset where packed sample payloads may begin
+// when all IMPS samplepointer fields are zero (ModPlug / MPT style).
+func itSampleDataPoolStart(data []byte, ptrEnd int, flags, special uint16, ins, smp, pat []uint32, msgOff uint32, msgLen uint16) int {
+	max := ptrEnd
+	for _, p := range ins {
+		o := int(p)
+		if o > 0 && o+554 > max {
+			max = o + 554
+		}
+	}
+	for _, p := range smp {
+		o := int(p)
+		if o > 0 && o+itSmpHdrSize > max {
+			max = o + itSmpHdrSize
+		}
+	}
+	for _, p := range pat {
+		if e := itPatternPackedEnd(data, int(p)); e > max {
+			max = e
+		}
+	}
+	if special&0x01 != 0 && msgLen > 0 && msgOff > 0 {
+		if e := int(msgOff) + int(msgLen); e > max && e <= len(data) {
+			max = e
+		}
+	}
+	minPtr := itFileMinEmbeddedPtr(ins, smp, pat, msgOff, msgLen, special, len(data))
+	cur := itSkipEditHistoryIfPresent(data, ptrEnd, special, minPtr)
+	if (flags&0x80) != 0 || (special&0x08) != 0 {
+		if cur+itMidiConfigSize <= len(data) {
+			cur += itMidiConfigSize
+		}
+	}
+	if cur > max {
+		max = cur
+	}
+	if max > len(data) {
+		max = len(data)
+	}
+	return max
+}
+
+func itAllSamplePayloadPointersZero(data []byte, smpPtrs []uint32) bool {
+	foundData := false
+	for _, hdrOff := range smpPtrs {
+		o := int(hdrOff)
+		if o <= 0 || o+itSmpHdrSize > len(data) || string(data[o:o+4]) != "IMPS" {
+			continue
+		}
+		flg := data[o+0x12]
+		length := int(binary.LittleEndian.Uint32(data[o+0x30:]))
+		if flg&1 == 0 || length <= 0 {
+			continue
+		}
+		foundData = true
+		ptr := int(binary.LittleEndian.Uint32(data[o+0x44:]))
+		if ptr != 0 {
+			return false
+		}
+	}
+	return foundData
+}
+
+// decodeSample loads one IMPS sample. If seq is non-nil and the header samplepointer is 0,
+// audio is read from *seq and *seq is advanced by the returned byte count (sequential pool layout).
+func decodeSample(data []byte, off int, cmwt, cwtv uint16, seq *int) (itSample, int, error) {
 	var s itSample
 	if off <= 0 || off+itSmpHdrSize > len(data) {
-		return s, nil
+		return s, 0, nil
 	}
 	if string(data[off:off+4]) != "IMPS" {
-		return s, fmt.Errorf("missing IMPS signature")
+		return s, 0, fmt.Errorf("missing IMPS signature")
 	}
 	s.Name = strings.TrimRight(string(data[off+0x14:off+0x2E]), "\x00")
 	flg := data[off+0x12]
@@ -253,7 +370,7 @@ func decodeSample(data []byte, off int, cmwt, cwtv uint16) (itSample, error) {
 	s.C5Speed = c5
 	s.SampleExists = flg&1 != 0
 	if !s.SampleExists || length <= 0 {
-		return s, nil
+		return s, 0, nil
 	}
 	stereo := flg&4 != 0
 	is16 := flg&2 != 0
@@ -262,16 +379,24 @@ func decodeSample(data []byte, off int, cmwt, cwtv uint16) (itSample, error) {
 	delta := cvt&4 != 0
 	it215 := cwtv >= 0x0215
 
-	if sampPtr <= 0 || sampPtr >= len(data) {
-		return s, fmt.Errorf("invalid sample data pointer")
+	usedSeq := seq != nil && (sampPtr <= 0 || sampPtr >= len(data))
+	var dataOff int
+	switch {
+	case sampPtr > 0 && sampPtr < len(data):
+		dataOff = sampPtr
+	case usedSeq && *seq >= 0 && *seq < len(data):
+		dataOff = *seq
+	default:
+		return s, 0, fmt.Errorf("invalid sample data pointer")
 	}
-	raw := data[sampPtr:]
+	raw := data[dataOff:]
 	frames := length
 	if stereo {
 		if frames < 1 {
-			return s, fmt.Errorf("invalid stereo sample length")
+			return s, 0, fmt.Errorf("invalid stereo sample length")
 		}
 	}
+	consumed := 0
 	if !compressed {
 		var byteLen int
 		if stereo {
@@ -287,7 +412,7 @@ func decodeSample(data []byte, off int, cmwt, cwtv uint16) (itSample, error) {
 			}
 		}
 		if byteLen > len(raw) {
-			return s, fmt.Errorf("sample data truncated")
+			return s, 0, fmt.Errorf("sample data truncated")
 		}
 		raw = raw[:byteLen]
 		if stereo {
@@ -295,36 +420,44 @@ func decodeSample(data []byte, off int, cmwt, cwtv uint16) (itSample, error) {
 		} else {
 			s.Data = pcmToInt16(raw, is16, signed, delta)
 		}
+		consumed = byteLen
 	} else {
 		if stereo {
 			var err error
+			var compUsed int
 			if is16 {
-				s.Data, err = decompressIT16Stereo(raw, frames, it215)
+				s.Data, compUsed, err = decompressIT16Stereo(raw, frames, it215)
 			} else {
-				s.Data, err = decompressIT8Stereo(raw, frames, it215)
+				s.Data, compUsed, err = decompressIT8Stereo(raw, frames, it215)
 			}
 			if err != nil {
-				return s, err
+				return s, 0, err
 			}
+			consumed = compUsed
 		} else {
 			if is16 {
-				d, err := decompressIT16(raw, frames, it215)
+				d, compUsed, err := decompressIT16(raw, frames, it215)
 				if err != nil {
-					return s, err
+					return s, 0, err
 				}
 				s.Data = make([]int16, len(d))
 				copy(s.Data, d)
+				consumed = compUsed
 			} else {
-				d, err := decompressIT8(raw, frames, it215)
+				d, compUsed, err := decompressIT8(raw, frames, it215)
 				if err != nil {
-					return s, err
+					return s, 0, err
 				}
 				s.Data = make([]int16, len(d))
 				for i := range d {
 					s.Data[i] = int16(int32(d[i]) << 8)
 				}
+				consumed = compUsed
 			}
 		}
+	}
+	if !usedSeq {
+		consumed = 0
 	}
 	s.Stereo = stereo
 	s.Length = len(s.Data)
@@ -356,7 +489,7 @@ func decodeSample(data []byte, off int, cmwt, cwtv uint16) (itSample, error) {
 			}
 		}
 	}
-	return s, nil
+	return s, consumed, nil
 }
 
 func pcmStereoToInt16(raw []byte, is16, signed, delta bool, frames int) []int16 {

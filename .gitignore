@@ -5,4 +5,5 @@ examples/it-player/it-player
 examples/mod-player/mod-player
 examples/module-to-wav/module-to-wav
 examples/rad-player/rad-player
+examples/s3m-player/s3m-player
 examples/xm-player/xm-player

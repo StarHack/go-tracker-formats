@@ -1,8 +1,8 @@
 # go-tracker-formats
 
-Supports working with the following listed formats. For implementation guidelines on how to work with each format, check out `examples/` directory, i.e..
+Supports working with the following listed formats. For implementation guidelines on how to work with each format, check out `examples/` directory, i.e.
 
-```
+```bash
 cd examples/xm-player/
 go build
 ./xm-player
@@ -55,7 +55,7 @@ Ports some concepts of Reality Adlib Tracker format into pure Go code. They do p
 
 ### XM
 
-```
+```bash
 go test -run TestXM_ListSamples -v ./test
 
 go test -run TestXM_ExtractSamples -v ./test -args \

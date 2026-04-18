@@ -1,6 +1,6 @@
 # go-tracker-formats
 
-Supports working with the following listed formats. For implementation guidelines on how to work with each format, check out `examples/` directory, i.e.
+Supports working with a number of chiptune/tracker formats listed below. For implementation guidelines on how to work with each format, check out `examples/` directory, i.e.
 
 ```shell
 cd examples/xm-player/
@@ -10,7 +10,7 @@ go build
 
 ## Formats
 
-Multiple formats were implemented independently and the idea is you may use parts of this library for your particular use case.
+Multiple formats were implemented independently and the idea is one may use parts of this library for their particular use case.
 
 - RAD (v1/v2)
 - MOD
